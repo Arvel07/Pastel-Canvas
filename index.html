@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#ffffff">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>魔法のパステルキャンバス - 雪だるま粉砕と鬼の猛追</title>
@@ -1470,6 +1472,11 @@
 
         render();
         const runner = Runner.create(); Runner.run(runner, engine);
+    </script>
+    <script>
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.register('./service-worker.js');
+        }
     </script>
 </body>
 </html>
