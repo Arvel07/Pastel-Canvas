@@ -1,0 +1,1475 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>魔法のパステルキャンバス - 雪だるま粉砕と鬼の猛追</title>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background-color: #fdfbfb; touch-action: none; font-family: sans-serif; }
+        canvas { display: block; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/poly-decomp@0.3.0/build/decomp.min.js"></script>
+</head>
+<body>
+    <canvas id="world"></canvas>
+
+    <script>
+        const { Engine, Runner, Bodies, Composite, Events, Body, Vector, Query } = Matter;
+
+        const canvas = document.getElementById('world');
+        const ctx = canvas.getContext('2d');
+        let width = window.innerWidth;
+        let height = window.innerHeight;
+        canvas.width = width; canvas.height = height;
+
+        const engine = Engine.create();
+        const world = engine.world;
+
+        // --- サウンドシステム ---
+        let audioCtx = null;
+        let bgmStarted = false;
+
+        const sounds = {
+            pop: () => {
+                if(!audioCtx) return;
+                let o = audioCtx.createOscillator(); let g = audioCtx.createGain();
+                o.type = 'sine'; o.frequency.setValueAtTime(800, audioCtx.currentTime); o.frequency.exponentialRampToValueAtTime(300, audioCtx.currentTime + 0.1);
+                g.gain.setValueAtTime(0.3, audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+                o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + 0.1);
+            },
+            boing: () => {
+                if(!audioCtx) return;
+                let o = audioCtx.createOscillator(); let g = audioCtx.createGain();
+                o.type = 'triangle'; o.frequency.setValueAtTime(150, audioCtx.currentTime); o.frequency.exponentialRampToValueAtTime(350, audioCtx.currentTime + 0.2);
+                g.gain.setValueAtTime(0.15, audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
+                o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + 0.2);
+            },
+            thunder: () => {
+                if(!audioCtx) return;
+                let bs = audioCtx.sampleRate * 1.5; let b = audioCtx.createBuffer(1, bs, audioCtx.sampleRate);
+                let d = b.getChannelData(0); for(let i=0; i<bs; i++) d[i] = Math.random()*2-1;
+                let n = audioCtx.createBufferSource(); n.buffer = b;
+                let f = audioCtx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 300;
+                let g = audioCtx.createGain();
+                g.gain.setValueAtTime(2.0, audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 1.5);
+                n.connect(f); f.connect(g); g.connect(audioCtx.destination); n.start();
+            },
+            rain: () => { 
+                if(!audioCtx) return;
+                let bs = audioCtx.sampleRate * 2.0; let b = audioCtx.createBuffer(1, bs, audioCtx.sampleRate);
+                let d = b.getChannelData(0); for(let i=0; i<bs; i++) d[i] = (Math.random()*2-1) * 0.4;
+                let n = audioCtx.createBufferSource(); n.buffer = b;
+                let f = audioCtx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 600;
+                let g = audioCtx.createGain();
+                g.gain.setValueAtTime(0, audioCtx.currentTime); 
+                g.gain.linearRampToValueAtTime(1.5, audioCtx.currentTime + 0.1); 
+                g.gain.setValueAtTime(1.5, audioCtx.currentTime + 1.2);
+                g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 2.0);
+                n.connect(f); f.connect(g); g.connect(audioCtx.destination); n.start();
+            },
+            magic: () => {
+                if(!audioCtx) return;
+                let now = audioCtx.currentTime;
+                [440, 554.37, 659.25, 880].forEach((freq, i) => {
+                    let o = audioCtx.createOscillator(); let g = audioCtx.createGain();
+                    o.type = 'sine'; o.frequency.value = freq;
+                    g.gain.setValueAtTime(0, now + i*0.1); g.gain.linearRampToValueAtTime(0.1, now + i*0.1 + 0.1); g.gain.exponentialRampToValueAtTime(0.01, now + i*0.1 + 1.5);
+                    o.connect(g); g.connect(audioCtx.destination); o.start(now + i*0.1); o.stop(now + i*0.1 + 1.5);
+                });
+            },
+            note: () => {
+                if(!audioCtx) return;
+                const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
+                const scales = [523.25, 587.33, 659.25, 783.99, 880.00, 1046.50]; 
+                osc.frequency.value = scales[Math.floor(Math.random() * scales.length)];
+                osc.type = 'sine';
+                osc.connect(gain); gain.connect(audioCtx.destination);
+                osc.start(); gain.gain.setValueAtTime(0.3, audioCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 1.0);
+                osc.stop(audioCtx.currentTime + 1.0);
+            }
+        };
+
+        function startBGM() {
+            if (bgmStarted) return;
+            bgmStarted = true;
+            function playMarimba(freq, vol=0.3, dur=0.3) {
+                if (!audioCtx || audioCtx.state !== 'running') return;
+                let now = audioCtx.currentTime;
+                let o = audioCtx.createOscillator(); let g = audioCtx.createGain();
+                o.type = 'sine'; o.frequency.value = freq;
+                g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(vol, now + 0.015); g.gain.exponentialRampToValueAtTime(0.001, now + dur);
+                let o2 = audioCtx.createOscillator(); let g2 = audioCtx.createGain();
+                o2.type = 'triangle'; o2.frequency.value = freq * 3.01;
+                g2.gain.setValueAtTime(0, now); g2.gain.linearRampToValueAtTime(vol * 0.15, now + 0.01); g2.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+                o.connect(g); g.connect(audioCtx.destination); o2.connect(g2); g2.connect(audioCtx.destination);
+                o.start(now); o.stop(now + dur); o2.start(now); o2.stop(now + dur);
+            }
+            const pentatonic = [261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33, 659.25, 783.99, 880.00]; 
+            const bassPentatonic = [130.81, 146.83, 164.81, 196.00, 220.00];
+            let beat = 0;
+            setInterval(() => {
+                if (!audioCtx || audioCtx.state !== 'running') return;
+                if (Math.random() < 0.6) playMarimba(pentatonic[Math.floor(Math.random() * pentatonic.length)], 0.2, 0.3);
+                if (beat % 2 !== 0 && Math.random() < 0.4) setTimeout(() => { if(audioCtx.state === 'running') playMarimba(pentatonic[Math.floor(Math.random() * pentatonic.length)], 0.1, 0.15); }, 100);
+                if (beat % 4 === 0) playMarimba(bassPentatonic[Math.floor(Math.random() * bassPentatonic.length)], 0.3, 0.5); 
+                if (beat % 8 === 0 && Math.random() < 0.6) {
+                    let rootIdx = Math.floor(Math.random() * 4);
+                    playMarimba(pentatonic[rootIdx], 0.15, 0.4); playMarimba(pentatonic[rootIdx + 2], 0.15, 0.4); playMarimba(pentatonic[rootIdx + 4], 0.15, 0.4);  
+                }
+                beat++;
+            }, 220); 
+        }
+
+        const dwarfs = [];
+        const lines = [];
+        const drawnObjects = []; 
+        const bubbles = [];
+        const rains = [];
+        const clouds = [];
+        const particles = [];
+        const ripples = []; 
+        const fires = []; 
+        const trees = [];
+        const birds = [];
+        const seeds = [];    
+        const plants = []; 
+        const balloons = []; 
+        const caterpillars = []; 
+        const butterflies = []; 
+        const magicSkies = []; 
+        const puddles = []; 
+        const fallenStars = []; 
+        
+        let onis = [];
+        const snowmen = [];
+        const snowflakes = [];
+        let isSnowing = false;
+        let snowTimer = 0;
+
+        let currentColor = '#ffffff'; 
+        let isNight = false; 
+        const stars = Array.from({length: 150}, () => ({x: Math.random()*2000, y: Math.random()*1500, r: Math.random()*1.5}));
+
+        const pastelPink = '#ffb3ff'; const pastelRed = '#ffb3b3'; const pastelBlue = '#b3d9ff';
+        const pastelYellow = '#ffffb3'; const pastelGreen = '#a8e6cf'; const pastelOrange = '#ffdfba'; 
+        const pastelBrown = '#d4a373'; 
+        const dwarfColors = [pastelRed, pastelBlue, pastelYellow, pastelGreen]; 
+        const dwarfTypes = [0, 1, 2]; 
+        const softCharcoal = '#6b7a8f';
+
+        const patternCache = {};
+        function getPattern(color) {
+            if(patternCache[color]) return patternCache[color];
+            let cvs = document.createElement('canvas'); cvs.width = 40; cvs.height = 40; let pctx = cvs.getContext('2d');
+            pctx.fillStyle = color; pctx.fillRect(0,0,40,40); pctx.fillStyle = 'rgba(255,255,255,0.5)';
+            pctx.beginPath(); pctx.arc(0,0,8,0,Math.PI*2); pctx.fill(); pctx.beginPath(); pctx.arc(40,40,8,0,Math.PI*2); pctx.fill();
+            pctx.beginPath(); pctx.arc(40,0,8,0,Math.PI*2); pctx.fill(); pctx.beginPath(); pctx.arc(0,40,8,0,Math.PI*2); pctx.fill();
+            pctx.beginPath(); pctx.arc(20,20,8,0,Math.PI*2); pctx.fill();
+            let pat = ctx.createPattern(cvs, 'repeat'); patternCache[color] = pat; return pat;
+        }
+
+        const groundSegments = 10; const groundBodies = []; let leftWall, rightWall;
+        function createBoundaries() {
+            groundBodies.forEach(b => Composite.remove(world, b)); groundBodies.length = 0;
+            if (leftWall) Composite.remove(world, leftWall); if (rightWall) Composite.remove(world, rightWall);
+            const segmentWidth = width / groundSegments;
+            for (let i = 0; i < groundSegments; i++) {
+                const x = (i + 0.5) * segmentWidth; const y = height - 40 + Math.sin(i * 0.8) * 25; 
+                const groundPart = Bodies.rectangle(x, y + 50, segmentWidth + 5, 100, { isStatic: true, friction: 0.3, angle: Math.cos(i * 0.8) * 0.15, label: 'ground' });
+                groundBodies.push(groundPart); Composite.add(world, groundPart);
+            }
+            leftWall = Bodies.rectangle(-50, height/2, 100, height, { isStatic: true }); rightWall = Bodies.rectangle(width+50, height/2, 100, height, { isStatic: true });
+            Composite.add(world, [leftWall, rightWall]);
+        }
+        createBoundaries();
+        window.addEventListener('resize', () => { width = window.innerWidth; height = window.innerHeight; canvas.width = width; canvas.height = height; createBoundaries(); });
+
+        function createDwarf(x, y) {
+            const scaleFactor = 1.0 + Math.random() * 1.0;
+            const body = Bodies.circle(x, y, 12 * scaleFactor, { restitution: 0.1, friction: 0.6, label: 'dwarf' }); 
+            Body.setInertia(body, Infinity); 
+            const dwarf = { 
+                body: body, type: dwarfTypes[Math.floor(Math.random() * dwarfTypes.length)], scaleFactor, 
+                themeColor: dwarfColors[Math.floor(Math.random() * dwarfColors.length)], direction: Math.random() > 0.5 ? 1 : -1, 
+                isGrabbed: false, fleeTimer: 0, isCharred: false, charredTimer: 0, scrubCount: 0, inWater: false, lastTargetStar: null,
+                inHouse: false, houseRef: null, snowmanTimer: 0, ignoreThreatTimer: 0, ownsSnowman: null
+            };
+            Composite.add(world, body); dwarfs.push(dwarf);
+        }
+
+        // ★ 鬼の生成：3〜5人ぶっ飛ばすまで帰らない
+        function createOni() {
+            let isLeft = Math.random() < 0.5;
+            let x = isLeft ? 60 : width - 60;
+            let scale = 2.0 + Math.random() * 1.0;
+            let body = Bodies.rectangle(x, height - (30 * scale), 24 * scale, 30 * scale, { restitution: 0.1, friction: 0.8, density: 0.05, label: 'oni' });
+            Body.setInertia(body, Infinity);
+            Composite.add(world, body);
+            onis.push({
+                body, time: 0, lifeTime: 0, state: 'huntingStar', scale: scale,
+                color: dwarfColors[Math.floor(Math.random() * dwarfColors.length)], 
+                dir: isLeft ? 1 : -1, targetStar: null, targetDwarf: null,
+                throwCount: 0, maxThrow: 3 + Math.floor(Math.random() * 3) // ★ ノルマ設定
+            });
+        }
+
+        function createCloud() {
+            const isFromLeft = Math.random() > 0.5;
+            const type = Math.random() < 0.30 ? 'thunder' : 'white';
+            clouds.push({ x: isFromLeft ? -100 : width + 100, y: 80 + clouds.length * 20, radius: 40 + Math.random()*15, vx: isFromLeft ? (0.2 + Math.random() * 0.3) : (-0.2 - Math.random() * 0.3), type: type, scale: 1, time: 0, isRaining: false, rainTimer: 0, isStriking: false, strikeTimer: 0 });
+        }
+
+        setInterval(() => {
+            if (Math.random() < 0.3) {
+                const drop = Bodies.circle(Math.random() * width, -10, 3, { restitution: 0.1, friction: 0.01 });
+                // ★ 通常の雨も isStar を false に固定して青い水滴にする
+                Composite.add(world, drop); rains.push({ body: drop, life: 300, isStar: false });
+            }
+        }, 500);
+
+        setInterval(() => {
+            if (isNight && Math.random() < 0.20) {
+                if (fallenStars.length >= 3) {
+                    let oldStar = fallenStars.shift();
+                    createSplatterParticles(oldStar.body.position.x, oldStar.body.position.y, pastelYellow);
+                    Composite.remove(world, oldStar.body);
+                }
+                let x = 50 + Math.random() * (width - 100);
+                let body = Bodies.circle(x, -20, 16, { restitution: 0.6, friction: 0.8, density: 0.05, label: 'fallenStar' });
+                Body.setVelocity(body, { x: (Math.random() - 0.5) * 8, y: 5 + Math.random() * 5 });
+                Composite.add(world, body);
+                fallenStars.push({ body: body, time: 0, followersCount: 0 });
+            }
+        }, 3000);
+
+        function createBubble() {
+            const isFromLeft = Math.random() > 0.5;
+            const x = isFromLeft ? -50 : width + 50; const y = 100 + Math.random() * (height - 250); 
+            const rand = Math.random(); let bubbleType = 'paint';
+            if (rand < 0.40) bubbleType = 'paint'; 
+            else if (rand < 0.48) bubbleType = 'fire'; 
+            else if (rand < 0.56) bubbleType = 'tree'; 
+            else if (rand < 0.62) bubbleType = 'seed'; 
+            else if (rand < 0.70) bubbleType = 'balloon'; 
+            else if (rand < 0.76) bubbleType = 'bird';
+            else if (rand < 0.82) {
+                const hasCelestial = bubbles.some(b => b.type === 'sun' || b.type === 'moon');
+                bubbleType = hasCelestial ? 'paint' : (isNight ? 'sun' : 'moon');
+            }
+            else if (rand < 0.88) bubbleType = 'caterpillar'; 
+            else if (rand < 0.94) bubbleType = 'snow'; 
+            else bubbleType = 'note'; 
+
+            let color = dwarfColors[Math.floor(Math.random() * dwarfColors.length)];
+            if (bubbleType === 'fire') color = pastelOrange; 
+            else if (bubbleType === 'tree') color = pastelGreen; 
+            else if (bubbleType === 'bird') color = '#90caf9';
+            else if (bubbleType === 'snow') color = '#e6f2ff';
+
+            bubbles.push({ x, y, baseY: y, radius: 38, color, type: bubbleType, vx: isFromLeft ? (0.15 + Math.random() * 0.2) : (-0.15 - Math.random() * 0.2), vy: (Math.random() - 0.5) * 0.2, wobbleOffset: Math.random() * 100, time: 0, targetY: y + (Math.random() - 0.5) * 20 });
+        }
+
+        function popBubble(b) {
+            sounds.pop();
+            if (b.type === 'paint') createSplatterParticles(b.x, b.y, b.color);
+            else if (b.type === 'fire') createFallingFire(b.x, b.y);
+            else if (b.type === 'tree') createTree(b.x, b.y);
+            else if (b.type === 'bird') createBird(b.x, b.y);
+            else if (b.type === 'seed') createSeed(b.x, b.y); 
+            else if (b.type === 'balloon') createBalloon(b.x, b.y, b.color); 
+            else if (b.type === 'moon' || b.type === 'sun') { isNight = !isNight; createSplatterParticles(b.x, b.y, '#fff'); }
+            else if (b.type === 'caterpillar') createCaterpillar(b.x, b.y);
+            else if (b.type === 'note') createNote(b.x, b.y);
+            else if (b.type === 'snow') {
+                isSnowing = true; snowTimer = 1800; sounds.magic(); 
+                createSplatterParticles(b.x, b.y, '#ffffff');
+            }
+            const index = bubbles.indexOf(b);
+            if (index > -1) bubbles.splice(index, 1);
+        }
+
+        function createBalloon(x, y, color) {
+            const body = Bodies.circle(x, y, 18, { frictionAir: 0.05, density: 0.001 });
+            Composite.add(world, body); balloons.push({ body, color, time: 0, passenger: null });
+        }
+
+        function createPuddle(x) {
+            let hitY = height - 40; let highestY = height;
+            world.bodies.forEach(b => {
+                if(b.label === 'ground' || b.label === 'line') {
+                    if (x > b.bounds.min.x && x < b.bounds.max.x) { if (b.bounds.min.y < highestY) highestY = b.bounds.min.y; }
+                }
+            });
+            puddles.push({ x: x, y: highestY, width: 90, life: 900 }); 
+        }
+
+        function createCaterpillar(x, y) {
+            const body = Bodies.rectangle(x, y, 30, 15, { restitution: 0.1, friction: 0.8 });
+            Body.setInertia(body, Infinity); Composite.add(world, body); caterpillars.push({ body, time: 0, state: 'crawling', eaten: 0, dir: Math.random()>0.5?1:-1, timer: 0 });
+        }
+        function createButterfly(x, y) {
+            const body = Bodies.circle(x, y, 12, { isSensor: true, frictionAir: 0.05 });
+            Composite.add(world, body); butterflies.push({ body, time: Math.random()*100 });
+        }
+        function createNote(x, y) {
+            const body = Bodies.circle(x, y, 15, { restitution: 0.9, friction: 0.1, label: 'note' });
+            body.bounceCount = 0; Composite.add(world, body);
+        }
+
+        Events.on(engine, 'collisionStart', (e) => {
+            e.pairs.forEach(pair => {
+                let a = pair.bodyA, b = pair.bodyB; let noteBody = null; let otherBody = null;
+                if (a.label === 'note') { noteBody = a; otherBody = b; } else if (b.label === 'note') { noteBody = b; otherBody = a; }
+                if (noteBody && noteBody.bounceCount < 15) {
+                    if (otherBody.label === 'line' || otherBody.label === 'ground' || otherBody.label === 'block' || otherBody.label === 'dwarf') {
+                        sounds.note(); ripples.push({x: noteBody.position.x, y: noteBody.position.y, r: 0, life: 30}); 
+                        Body.setVelocity(noteBody, {x: noteBody.velocity.x, y: -6});
+                        noteBody.bounceCount++;
+                        if (noteBody.bounceCount >= 15) {
+                            createSplatterParticles(noteBody.position.x, noteBody.position.y, pastelYellow);
+                            Composite.remove(world, noteBody); noteBody.bounceCount = 99; 
+                        }
+                    }
+                }
+            });
+        });
+
+        // ★ 通常の飛び散りエフェクト
+        function createSplatterParticles(x, y, color) {
+            for(let p=0; p<12; p++) {
+                const isMain = p === 0; const spikes = []; const spikeCount = isMain ? 8 : (4 + Math.floor(Math.random()*3));
+                for(let s=0; s<spikeCount; s++) { spikes.push({ angle: (Math.PI * 2 / spikeCount) * s + (Math.random()*0.5), len: isMain ? (15 + Math.random() * 25) : (5 + Math.random() * 15) }); }
+                particles.push({ x: x + (isMain ? 0 : (Math.random()-0.5)*40), y: y + (isMain ? 0 : (Math.random()-0.5)*40), vx: isMain ? 0 : (Math.random()-0.5)*8, vy: isMain ? 0 : (Math.random()-0.5)*8 - 2, life: 200 + Math.random()*50, color: color, baseRadius: isMain ? 15 : (4 + Math.random()*6), spikes: spikes });
+            }
+        }
+
+        // ★ 雪だるま粉砕専用エフェクト（丸い雪の塊）
+        function createSnowShards(x, y) {
+            for(let i=0; i<15; i++) {
+                particles.push({
+                    x: x + (Math.random()-0.5)*40,
+                    y: y + (Math.random()-0.5)*50,
+                    vx: (Math.random()-0.5)*12,
+                    vy: (Math.random()-0.5)*12 - 5,
+                    life: 100 + Math.random()*50,
+                    color: '#cce6ff', // 少し水色がかった雪の色
+                    baseRadius: 3 + Math.random()*6,
+                    spikes: [] 
+                });
+            }
+        }
+
+        function createFallingFire(x, y) {
+            const body = Bodies.circle(x, y, 20, { restitution: 0.1, friction: 0.2, density: 0.01 }); Composite.add(world, body); fires.push({ body, color: pastelOrange, time: 0 });
+        }
+        function createTree(x, y) {
+            const body = Bodies.rectangle(x, y, 30, 60, { restitution: 0.1, friction: 0.8, density: 0.05 }); Body.setInertia(body, Infinity); Composite.add(world, body); 
+            trees.push({ body, isBurning: false, burnTimer: 300, time: Math.random() * 100, isHouse: false, occupants: [], scale: 1 });
+        }
+        function createBird(x, y) {
+            const body = Bodies.circle(x, y, 12, { frictionAir: 0.02, collisionFilter: { mask: 0 } }); Composite.add(world, body); birds.push({ body, angle: 0, flyDirX: Math.random() > 0.5 ? 1 : -1, time: 0, state: 'hunting', targetDwarf: null, grabTimer: 0 });
+        }
+        function createSeed(x, y) {
+            const body = Bodies.circle(x, y, 6, { restitution: 0.1, friction: 0.8, density: 0.05 }); Composite.add(world, body); seeds.push({ body, time: 0 });
+        }
+        function createPlant(x, y) {
+            const isMushroom = Math.random() < 0.5; 
+            const body = Bodies.rectangle(x, y - 10, 20, 20, { isStatic: true, isSensor: true }); Composite.add(world, body);
+            plants.push({ body, type: isMushroom ? 'mushroom' : 'flower', baseX: x, baseY: y, time: Math.random() * 100, scale: 0.2, targetScale: 1.0, color: dwarfColors[Math.floor(Math.random() * dwarfColors.length)], isBurning: false, burnTimer: 300, isBud: false });
+        }
+
+        function createDrawnObject(path, color, strokeId) {
+            for (let i = lines.length - 1; i >= 0; i--) { if (lines[i].strokeId === strokeId) { Composite.remove(world, lines[i].body); lines.splice(i, 1); } }
+            let vertices = []; for (let i = 0; i < path.length; i += 2) { vertices.push({ x: path[i].x, y: path[i].y }); }
+            let center = Matter.Vertices.centre(vertices); let body;
+            try { body = Bodies.fromVertices(center.x, center.y, [vertices], { restitution: 0.3, friction: 0.8, density: 0.01, label: 'block' }, true, 0.01, 10, 0.01); } catch(e) {}
+            if (!body || body.parts.length === 0) {
+                let minX = Math.min(...path.map(p=>p.x)), maxX = Math.max(...path.map(p=>p.x)); let minY = Math.min(...path.map(p=>p.y)), maxY = Math.max(...path.map(p=>p.y));
+                body = Bodies.rectangle(minX + (maxX-minX)/2, minY + (maxY-minY)/2, maxX-minX, maxY-minY, { restitution: 0.3, label: 'block' });
+            }
+            Composite.add(world, body); drawnObjects.push({ body: body, color: color }); 
+        }
+
+        function triggerLightning(cloudX) {
+            const strikeWidth = 50; sounds.thunder();
+            dwarfs.forEach(d => {
+                if (d.inHouse) return; 
+                if (Math.abs(d.body.position.x - cloudX) < strikeWidth) {
+                    Body.setVelocity(d.body, { x: (Math.random() > 0.5 ? 1 : -1) * (8 + Math.random()*5), y: -18 }); d.isCharred = true; d.charredTimer = 9999; 
+                }
+            });
+            for (let i = onis.length - 1; i >= 0; i--) {
+                let o = onis[i];
+                if (Math.abs(o.body.position.x - cloudX) < strikeWidth + 30) {
+                    createSplatterParticles(o.body.position.x, o.body.position.y, o.color); sounds.pop();
+                    Composite.remove(world, o.body); onis.splice(i, 1);
+                }
+            }
+            trees.forEach(t => { if (Math.abs(t.body.position.x - cloudX) < strikeWidth) t.isBurning = true; });
+            plants.forEach(p => { if (Math.abs(p.body.position.x - cloudX) < strikeWidth) p.isBurning = true; });
+        }
+
+        for(let i=0; i<12; i++) createDwarf(Math.random()*width, 50);
+        for(let i=0; i<3; i++) createCloud(); 
+
+        // --- 毎フレームのアップデート処理 ---
+        Events.on(engine, 'beforeUpdate', () => {
+            fallenStars.forEach(s => s.followersCount = 0);
+
+            if (isSnowing) {
+                snowTimer--; if (snowTimer <= 0) isSnowing = false;
+                if (Math.random() < 0.4) snowflakes.push({ x: Math.random() * width, y: -10, vx: (Math.random() - 0.5) * 1, vy: 1 + Math.random() * 2, size: 1.5 + Math.random() * 2.5, angle: Math.random() * Math.PI, spin: (Math.random() - 0.5) * 0.1 });
+            }
+            for (let i = snowflakes.length - 1; i >= 0; i--) {
+                let sf = snowflakes[i]; sf.x += sf.vx + Math.sin(Date.now() * 0.001 + sf.y * 0.01) * 0.5; sf.y += sf.vy; sf.angle += sf.spin;
+                if (sf.y > height) snowflakes.splice(i, 1);
+            }
+
+            if (Math.random() < 0.0005 && onis.length < 2) createOni();
+
+            onis.forEach((o, i) => {
+                o.time++; o.lifeTime++;
+                let isGrounded = Math.abs(o.body.velocity.y) < 0.1; let forceMult = o.scale * o.scale;
+
+                if (o.lifeTime > 5400) {
+                    createSplatterParticles(o.body.position.x, o.body.position.y, o.color); sounds.pop();
+                    Composite.remove(world, o.body); onis.splice(i, 1); return;
+                }
+
+                if (o.state === 'fleeing' || o.state === 'returning') {
+                    Body.applyForce(o.body, o.body.position, { x: o.dir * 0.005 * forceMult, y: 0 });
+                    if (isGrounded && Math.random() < 0.1) Body.setVelocity(o.body, {x: o.body.velocity.x, y: -5});
+                    if (o.body.position.x < 40 || o.body.position.x > width - 40) { Composite.remove(world, o.body); onis.splice(i, 1); }
+                    return;
+                }
+
+                let nearestStar = null; let minStarDist = Infinity;
+                fallenStars.forEach(s => { let dist = Math.abs(s.body.position.x - o.body.position.x); if (dist < minStarDist) { minStarDist = dist; nearestStar = s; } });
+
+                if (nearestStar) {
+                    o.state = 'huntingStar'; o.targetStar = nearestStar; o.dir = nearestStar.body.position.x > o.body.position.x ? 1 : -1;
+                    if (Vector.magnitude(Vector.sub(o.body.position, nearestStar.body.position)) < 30 * o.scale) {
+                        createSplatterParticles(nearestStar.body.position.x, nearestStar.body.position.y, pastelYellow); sounds.pop();
+                        let idx = fallenStars.indexOf(nearestStar); if(idx > -1) { Composite.remove(world, nearestStar.body); fallenStars.splice(idx, 1); }
+                        o.state = 'returning'; o.dir = o.body.position.x > width/2 ? 1 : -1; Body.setVelocity(o.body, {x: o.body.velocity.x, y: -4});
+                    }
+                } else {
+                    o.state = 'huntingDwarf'; let nearestDwarf = null; let minDwarfDist = Infinity;
+                    dwarfs.forEach(d => {
+                        if (!d.isCharred && !d.inHouse && !d.isGrabbed) { let dist = Math.abs(d.body.position.x - o.body.position.x); if (dist < minDwarfDist) { minDwarfDist = dist; nearestDwarf = d; } }
+                    });
+                    if (nearestDwarf) {
+                        o.dir = nearestDwarf.body.position.x > o.body.position.x ? 1 : -1;
+                        if (Vector.magnitude(Vector.sub(o.body.position, nearestDwarf.body.position)) < 40 * o.scale) {
+                            nearestDwarf.isCharred = true; nearestDwarf.charredTimer = 9999; sounds.boing();
+                            
+                            Body.setPosition(nearestDwarf.body, { x: nearestDwarf.body.position.x, y: nearestDwarf.body.position.y - 20 });
+                            let throwX = (o.dir) * (15 + Math.random() * 5); 
+                            let throwY = -(15 + Math.random() * 5);
+                            Body.setVelocity(nearestDwarf.body, {x: throwX, y: throwY});
+                            
+                            o.throwCount++;
+                            if (o.throwCount >= o.maxThrow) {
+                                o.state = 'returning'; o.dir = o.body.position.x > width/2 ? 1 : -1;
+                            } else {
+                                Body.setVelocity(o.body, {x: o.body.velocity.x, y: -4}); 
+                            }
+                        }
+                    } else { if (Math.random() < 0.01) o.dir *= -1; }
+                }
+
+                if (Math.abs(o.body.velocity.x) < 3.0) Body.applyForce(o.body, o.body.position, { x: o.dir * 0.002 * forceMult, y: 0 });
+                if (isGrounded && Math.random() < 0.05) Body.setVelocity(o.body, {x: o.body.velocity.x, y: -4});
+
+                // ★ 鬼は雨を気にせず追いかけるよう変更！
+            });
+
+            let hasThreat = clouds.some(c => c.isRaining || c.isStriking) || onis.length > 0;
+
+            dwarfs.forEach(d => {
+                if (d.ignoreThreatTimer > 0) d.ignoreThreatTimer--;
+
+                if (d.inHouse) {
+                    if (!d.houseRef || !trees.includes(d.houseRef) || d.houseRef.isBurning) {
+                        d.inHouse = false; d.houseRef = null; Body.setStatic(d.body, false);
+                        Body.setPosition(d.body, {x: d.body.position.x, y: d.body.position.y});
+                        Body.setVelocity(d.body, {x: (Math.random()-0.5)*8, y: -6});
+                        if(trees.includes(d.houseRef) && d.houseRef.isBurning) { d.isCharred = true; d.charredTimer = 180; }
+                    } else if (!hasThreat) {
+                        if (Math.random() < 0.02) {
+                            d.inHouse = false;
+                            let idx = d.houseRef.occupants.indexOf(d);
+                            if (idx > -1) d.houseRef.occupants.splice(idx, 1);
+                            d.houseRef = null; Body.setStatic(d.body, false);
+                            d.ignoreThreatTimer = 600; 
+                            Body.setPosition(d.body, {x: d.body.position.x, y: d.body.position.y});
+                            Body.setVelocity(d.body, {x: (Math.random()-0.5)*6, y: -4});
+                        }
+                    }
+                    return; 
+                }
+
+                if (d.isGrabbed) return; 
+                const body = d.body; const forceMultiplier = 0.0004 * d.scaleFactor;
+                let isGrounded = Math.abs(body.velocity.y) < 0.1;
+
+                if (d.charredTimer > 0) { d.charredTimer--; if(d.charredTimer <= 0) d.isCharred = false; }
+                if (d.fleeTimer > 0) d.fleeTimer--;
+
+                // ★ 雪だるま作り（確率をさらに低く）
+                if (isSnowing && !hasThreat && isGrounded && Math.random() < 0.0005 && !d.snowmanTimer && !d.isCharred && !d.ownsSnowman) { d.snowmanTimer = 100; }
+                if (d.snowmanTimer > 0) {
+                    d.snowmanTimer--;
+                    Body.setVelocity(body, {x: body.velocity.x * 0.8, y: body.velocity.y});
+                    if (d.snowmanTimer === 0) { 
+                        let smBody = Bodies.rectangle(body.position.x + d.direction * 30, body.position.y - 20, 40, 60, { restitution: 0.1, friction: 0.8, density: 0.05, label: 'snowman' });
+                        Composite.add(world, smBody); 
+                        let sm = { body: smBody, time: 0, owner: d };
+                        snowmen.push(sm);
+                        d.ownsSnowman = sm;
+                        sounds.pop(); 
+                    }
+                    return; 
+                }
+
+                if (hasThreat && !d.isCharred && d.ignoreThreatTimer <= 0) {
+                    let nearestHouse = null; let minHouseDist = Infinity;
+                    trees.forEach(t => {
+                        if (t.isHouse && !t.isBurning) {
+                            let dist = Math.abs(t.body.position.x - body.position.x);
+                            if (dist < minHouseDist) { minHouseDist = dist; nearestHouse = t; }
+                        }
+                    });
+                    if (nearestHouse) {
+                        if (minHouseDist < 30 * nearestHouse.scale) {
+                            d.inHouse = true; d.houseRef = nearestHouse; nearestHouse.occupants.push(d);
+                            Body.setStatic(d.body, true); Body.setPosition(d.body, {x: nearestHouse.body.position.x, y: nearestHouse.body.position.y});
+                        } else {
+                            d.direction = nearestHouse.body.position.x > body.position.x ? 1 : -1;
+                            if (Math.abs(body.velocity.x) < 2.5) Body.applyForce(body, body.position, { x: d.direction * forceMultiplier * 1.5, y: 0 });
+                            if (isGrounded && Math.random() < 0.05) Body.setVelocity(body, { x: d.direction * 2, y: -4 });
+                        }
+                        return; 
+                    }
+                }
+
+                let isFleeing = false;
+                fires.forEach(f => {
+                    if (Vector.magnitude(Vector.sub(body.position, f.body.position)) < 90) {
+                        isFleeing = true;
+                        if (d.fleeTimer <= 0) { d.direction = body.position.x < f.body.position.x ? -1 : 1; Body.setVelocity(body, { x: d.direction * 5, y: -7.5 }); d.fleeTimer = 60; }
+                    }
+                });
+
+                if (!isFleeing && d.fleeTimer <= 0 && !d.isCharred) { 
+                    let targetBalloon = null;
+                    if (isGrounded) {
+                        for (let b of balloons) {
+                            if (!b.passenger) {
+                                const dx = b.body.position.x - body.position.x; const dy = b.body.position.y - body.position.y;
+                                if (Math.abs(dx) < 60 && dy < -40 && dy > -180) { targetBalloon = b; break; }
+                            }
+                        }
+                    }
+
+                    if (targetBalloon) {
+                        const dx = targetBalloon.body.position.x - body.position.x; d.direction = dx > 0 ? 1 : -1;
+                        Body.setVelocity(body, { x: dx * 0.08, y: -8 });
+                    } else {
+                        let targetStar = null; let minStarDist = 250;
+                        fallenStars.forEach(s => {
+                            let dist = Math.hypot(body.position.x - s.body.position.x, body.position.y - s.body.position.y);
+                            if (s.followersCount >= 3 && d.lastTargetStar !== s.body) return; 
+                            if (dist < minStarDist) { minStarDist = dist; targetStar = s.body; }
+                        });
+                        
+                        if (targetStar) {
+                            let fs = fallenStars.find(s => s.body === targetStar);
+                            if (fs) fs.followersCount++;
+                            d.lastTargetStar = targetStar;
+                            d.direction = targetStar.position.x > body.position.x ? 1 : -1;
+                            
+                            if (minStarDist < 45) {
+                                Body.setVelocity(body, { x: body.velocity.x * 0.8, y: body.velocity.y });
+                                if (isGrounded && Math.random() < 0.05) { Body.setVelocity(body, { x: body.velocity.x, y: -4 - Math.random()*2 }); sounds.boing(); }
+                            } else {
+                                if (Math.abs(body.velocity.x) < 2.5) { Body.applyForce(body, body.position, { x: d.direction * forceMultiplier * 1.5, y: 0 }); }
+                            }
+                        } else {
+                            d.lastTargetStar = null; let targetNote = null; let minNoteDist = 150;
+                            world.bodies.forEach(b => {
+                                if (b.label === 'note') {
+                                    let dist = Vector.magnitude(Vector.sub(body.position, b.position));
+                                    if (dist < minNoteDist) { minNoteDist = dist; targetNote = b; }
+                                }
+                            });
+
+                            let nearPlant = false;
+                            plants.forEach(pl => {
+                                if (Vector.magnitude(Vector.sub(body.position, pl.body.position)) < 80) { nearPlant = true; if (Math.random() < 0.03 && !targetNote) d.direction = body.position.x < pl.body.position.x ? 1 : -1; }
+                                if (pl.type === 'mushroom' && !pl.isBurning) {
+                                    const dx = body.position.x - pl.body.position.x; const dy = body.position.y - pl.body.position.y;
+                                    if (Math.abs(dx) < 20 && dy > -30 && dy < 0 && body.velocity.y > 0) { 
+                                        sounds.boing(); Body.setVelocity(body, { x: body.velocity.x, y: -12 - Math.random() * 4 }); pl.scale = 0.6; 
+                                    }
+                                }
+                            });
+
+                            if (targetNote) d.direction = targetNote.position.x > body.position.x ? 1 : -1;
+                            let speedLimit = targetNote ? 2.5 : (nearPlant ? 0.8 : 2.0); 
+                            if(d.inWater) speedLimit = 0.5; 
+
+                            if (Math.abs(body.velocity.x) < speedLimit) { Body.applyForce(body, body.position, { x: d.direction * forceMultiplier * (targetNote ? 1.5 : 1), y: 0 }); }
+                            if (isGrounded && !d.inWater) { if (Math.abs(body.velocity.x) < 0.2 && Math.random() < 0.1) Body.setVelocity(body, { x: d.direction * 2.5, y: -5 }); }
+                            if (Math.random() < 0.001 && !targetNote && !targetStar) d.direction *= -1;
+                        }
+                    }
+                }
+                if (body.position.x < 30) d.direction = 1; if (body.position.x > width - 30) d.direction = -1;
+            });
+
+            puddles.forEach(p => {
+                p.life--;
+                dwarfs.forEach(d => {
+                    if (!d.inHouse && Math.abs(d.body.position.x - p.x) < p.width/2 && Math.abs(d.body.position.y - p.y) < 20) {
+                        if (Math.abs(d.body.velocity.x) > 0.5 && Math.random() < 0.2) {
+                            particles.push({ x: d.body.position.x, y: p.y, vx: (Math.random()-0.5)*2, vy: -1 - Math.random()*2, life: 20 + Math.random()*20, color: '#cceeff', baseRadius: 2, spikes: [] });
+                        }
+                    }
+                });
+            });
+            for(let i=puddles.length-1; i>=0; i--) { if(puddles[i].life <= 0) puddles.splice(i, 1); }
+
+            let hasMagicSky = magicSkies.length > 0;
+            for(let i=magicSkies.length-1; i>=0; i--){ magicSkies[i].life--; if(magicSkies[i].life <= 0) magicSkies.splice(i, 1); }
+
+            clouds.forEach(c => {
+                c.time++; 
+                if (c.isRaining) {
+                    c.rainTimer--; 
+                    if (c.rainTimer <= 0) { c.isRaining = false; if (c.type === 'white') createPuddle(c.x); }
+                    if (c.type === 'white') {
+                        c.scale = 1.0 + Math.sin((600 - c.rainTimer) * 0.1) * 0.2;
+                        if (Math.random() < 0.4) {
+                            const drop = Bodies.circle(c.x + (Math.random() - 0.5) * (c.radius * 2.5), c.y + 10, 3, { restitution: 0.1, friction: 0.01 });
+                            // ★ 雲から降る雨も青いしずくにする
+                            Composite.add(world, drop); rains.push({ body: drop, life: 250, isStar: false });
+                        }
+                    } else { c.x += c.vx; }
+                } else { c.x += c.vx; c.scale += (1.0 - c.scale) * 0.1; }
+                if (c.isStriking) { c.strikeTimer--; if (c.strikeTimer <= 0) c.isStriking = false; }
+            });
+
+            for (let i = rains.length - 1; i >= 0; i--) {
+                const drop = rains[i]; drop.life--;
+                if (drop.isStar) {
+                    dwarfs.forEach(d => { if(d.isCharred && !d.inHouse && Vector.magnitude(Vector.sub(drop.body.position, d.body.position)) < 30) { d.isCharred = false; d.charredTimer = 0; } });
+                    plants.forEach(p => { if(p.isBurning && Vector.magnitude(Vector.sub(drop.body.position, p.body.position)) < 30) { p.isBurning = false; p.burnTimer = 300; } });
+                    trees.forEach(t => { if(t.isBurning && Vector.magnitude(Vector.sub(drop.body.position, t.body.position)) < 30 * t.scale) { t.isBurning = false; t.burnTimer = 300; } });
+                }
+                if (Query.collides(drop.body, groundBodies).length > 0 || drop.life <= 0 || drop.body.position.y > height + 20) {
+                    Composite.remove(world, drop.body); rains.splice(i, 1);
+                }
+            }
+
+            bubbles.forEach(b => {
+                if (b === grabbedBubble) return; 
+                b.time++; b.x += b.vx; b.y += b.vy;
+                if (b.time % 90 === 0) b.targetY = b.baseY + Math.sin(b.time * 0.01 + b.wobbleOffset) * 15;
+                b.vy += (b.targetY - b.y) * 0.005; 
+            });
+
+            for (let i = balloons.length - 1; i >= 0; i--) {
+                const b = balloons[i]; b.time++;
+                Body.applyForce(b.body, b.body.position, { x: Math.sin(b.time*0.05)*0.0003, y: -0.0012 });
+
+                if (!b.passenger) {
+                    dwarfs.forEach(d => {
+                        if (!d.isGrabbed && !d.isCharred && !d.inHouse) {
+                            const dx = d.body.position.x - b.body.position.x; const dy = d.body.position.y - b.body.position.y;
+                            if (Math.abs(dx) < 35 && dy > -10 && dy < 60) { b.passenger = d; d.isGrabbed = true; Body.setVelocity(d.body, {x: 0, y: 0}); }
+                        }
+                    });
+                } else {
+                    Body.setPosition(b.passenger.body, { x: b.body.position.x, y: b.body.position.y + 35 });
+                    Body.setVelocity(b.passenger.body, b.body.velocity);
+                    if (b.body.position.y < 40 || Math.random() < 0.0002) {
+                        b.passenger.isGrabbed = false; createSplatterParticles(b.body.position.x, b.body.position.y, b.color); sounds.pop();
+                        Composite.remove(world, b.body); balloons.splice(i, 1);
+                    }
+                }
+                if (balloons[i] && b.body.position.y < -100) { Composite.remove(world, b.body); balloons.splice(i, 1); }
+            }
+
+            for (let i = trees.length - 1; i >= 0; i--) {
+                const t = trees[i]; t.time++;
+                if (!t.body.isStatic && (Query.collides(t.body, groundBodies).length > 0 || Query.collides(t.body, lines.map(l => l.body)).length > 0)) {
+                    Body.setStatic(t.body, true);
+                    t.body.isSensor = true; 
+                }
+                fires.forEach(f => { if (Vector.magnitude(Vector.sub(t.body.position, f.body.position)) < 45 * t.scale) t.isBurning = true; });
+                
+                if (t.isBurning) {
+                    if (t.occupants.length > 0) {
+                        t.occupants.forEach(d => {
+                            d.inHouse = false; d.houseRef = null; Body.setStatic(d.body, false);
+                            Body.setPosition(d.body, {x: t.body.position.x, y: t.body.position.y});
+                            Body.setVelocity(d.body, {x: (Math.random()-0.5)*8, y: -6});
+                            d.isCharred = true; d.charredTimer = 180;
+                        });
+                        t.occupants = [];
+                    }
+                    t.burnTimer--;
+                    if (t.burnTimer <= 0) { Composite.remove(world, t.body); trees.splice(i, 1); continue; }
+                    if (Math.random() < 0.01) createFallingFire(t.body.position.x + (Math.random()-0.5)*20, t.body.position.y - 10);
+                }
+                for (let j = rains.length - 1; j >= 0; j--) {
+                    if (Vector.magnitude(Vector.sub(t.body.position, rains[j].body.position)) < 40 * t.scale && t.isBurning) {
+                        t.isBurning = false; t.burnTimer = 300; Composite.remove(world, rains[j].body); rains.splice(j, 1);
+                    }
+                }
+            }
+
+            for (let i = seeds.length - 1; i >= 0; i--) {
+                let s = seeds[i]; s.time++;
+                let hit = Query.collides(s.body, groundBodies).length > 0 || Query.collides(s.body, lines.map(l => l.body)).length > 0;
+                if (hit) { createPlant(s.body.position.x, s.body.position.y + 6); Composite.remove(world, s.body); seeds.splice(i, 1); } 
+                else if (s.body.position.y > height + 50) { Composite.remove(world, s.body); seeds.splice(i, 1); }
+            }
+
+            for (let i = plants.length - 1; i >= 0; i--) {
+                let pl = plants[i]; pl.time++; pl.scale += (pl.targetScale - pl.scale) * 0.1;
+                if (isNight && pl.type === 'flower') pl.isBud = true; else pl.isBud = false;
+                if (pl.targetScale === 1.0 && pl.scale < 0.95) pl.targetScale = 1.0; 
+                fires.forEach(fi => { if (Vector.magnitude(Vector.sub(pl.body.position, fi.body.position)) < 35) pl.isBurning = true; });
+
+                if (pl.isBurning && !pl.isBud) {
+                    pl.burnTimer--;
+                    if (pl.burnTimer <= 0) { Composite.remove(world, pl.body); plants.splice(i, 1); continue; }
+                    if (Math.random() < 0.01) createFallingFire(pl.body.position.x + (Math.random()-0.5)*20, pl.body.position.y - 10);
+                }
+
+                for (let j = rains.length - 1; j >= 0; j--) {
+                    if (Vector.magnitude(Vector.sub(pl.body.position, rains[j].body.position)) < 30) {
+                        if (pl.isBurning) { pl.isBurning = false; pl.burnTimer = 300; } 
+                        else if (pl.targetScale < 1.8 && !pl.isBud) pl.targetScale += 0.15; 
+                        Composite.remove(world, rains[j].body); rains.splice(j, 1);
+                    }
+                }
+                if(pl.type === 'flower' && !pl.isBud) {
+                    dwarfs.forEach(d => {
+                        if (!d.inHouse && !pl.isBurning && Vector.magnitude(Vector.sub(pl.body.position, d.body.position)) < 35 && Math.random() < 0.1) {
+                            particles.push({ x: pl.body.position.x + (Math.random()-0.5)*20, y: pl.body.position.y - 10 + (Math.random()-0.5)*20, vx: (Math.random()-0.5)*2, vy: -1 - Math.random()*2, life: 50 + Math.random()*50, color: '#ffffff', baseRadius: 2.5, spikes: [] });
+                        }
+                    });
+                }
+            }
+
+            for (let i = caterpillars.length - 1; i >= 0; i--) {
+                let c = caterpillars[i]; c.time++;
+                if (c.state === 'crawling') {
+                    let isGrounded = Math.abs(c.body.velocity.y) < 0.1;
+                    if(isGrounded) { Body.applyForce(c.body, c.body.position, {x: c.dir * 0.0005, y: 0}); if (c.time % 30 === 0) Body.setVelocity(c.body, {x: c.body.velocity.x, y: -2}); }
+                    if(Math.random() < 0.01) c.dir *= -1;
+                    for (let j = plants.length - 1; j >= 0; j--) {
+                        if (plants[j].type === 'flower' && Vector.magnitude(Vector.sub(c.body.position, plants[j].body.position)) < 30) {
+                            Composite.remove(world, plants[j].body); plants.splice(j, 1); c.eaten++;
+                            if (c.eaten >= 1) { c.state = 'pupa'; c.timer = 300; Body.setStatic(c.body, true); } break;
+                        }
+                    }
+                } else if (c.state === 'pupa') {
+                    c.timer--;
+                    if (c.timer <= 0) { createButterfly(c.body.position.x, c.body.position.y); Composite.remove(world, c.body); caterpillars.splice(i, 1); }
+                }
+            }
+
+            butterflies.forEach(b => {
+                b.time++;
+                let tx = touchCurrentPos ? touchCurrentPos.x : width/2; let ty = touchCurrentPos ? touchCurrentPos.y : height/2;
+                let dx = tx - b.body.position.x; let dy = ty - b.body.position.y; let dist = Math.hypot(dx, dy);
+                if (dist > 0) Body.applyForce(b.body, b.body.position, {x: (dx/dist)*0.0002, y: (dy/dist)*0.0002});
+                Body.applyForce(b.body, b.body.position, {x: (Math.random()-0.5)*0.0005, y: (Math.random()-0.5)*0.0005});
+            });
+
+            birds.forEach(b => {
+                b.time++; const body = b.body;
+                if (b.state === 'hunting') {
+                    Body.applyForce(body, body.position, { x: 0, y: -0.0002 * body.mass });
+                    let closestDwarf = null; let minDist = 300;
+                    dwarfs.forEach(d => { if (!d.inHouse && !d.isGrabbed && !d.isCharred && Vector.magnitude(Vector.sub(body.position, d.body.position)) < minDist) { minDist = Vector.magnitude(Vector.sub(body.position, d.body.position)); closestDwarf = d; } });
+                    if (closestDwarf) { b.targetDwarf = closestDwarf; b.state = 'seeking'; } else { b.state = 'flying'; }
+                }
+                if (b.state === 'seeking' && b.targetDwarf) {
+                    if (!dwarfs.includes(b.targetDwarf) || b.targetDwarf.isCharred || b.targetDwarf.inHouse) { b.state = 'hunting'; b.targetDwarf = null; } 
+                    else {
+                        const diff = Vector.sub(b.targetDwarf.body.position, body.position); const dir = Vector.normalise(diff);
+                        Body.setVelocity(body, { x: dir.x * 1.75, y: dir.y * 1.75 });
+                        if (Vector.magnitude(diff) < 25) { b.state = 'grabbing'; b.targetDwarf.isGrabbed = true; b.grabTimer = 110; }
+                    }
+                } else if (b.state === 'grabbing' && b.targetDwarf) {
+                    const dwarfBody = b.targetDwarf.body;
+                    Body.setVelocity(body, { x: Math.sin(b.time * 0.08) * 1.5, y: -2.8 });
+                    Body.setPosition(dwarfBody, { x: body.position.x, y: body.position.y + 15 }); Body.setVelocity(dwarfBody, { x: body.velocity.x, y: body.velocity.y });
+                    b.grabTimer--;
+                    if (b.grabTimer <= 0) {
+                        b.state = 'releasing'; b.targetDwarf.isGrabbed = false;
+                        Body.setVelocity(dwarfBody, { x: (Math.random() > 0.5 ? 1 : -1) * (4 + Math.random() * 4), y: -6 });
+                        b.targetDwarf = null; b.grabTimer = 400; b.flyDirX = Math.random() > 0.5 ? 1 : -1;
+                    }
+                } else if (b.state === 'releasing' || b.state === 'flying') {
+                    if (b.state === 'releasing') { b.grabTimer--; if (b.grabTimer <= 0) b.state = 'hunting'; } else { if (Math.random() < 0.005) b.state = 'hunting'; }
+                    if (Math.random() < 0.01) b.flyDirX *= -1;
+                    Body.applyForce(body, body.position, { x: b.flyDirX * 0.0002, y: Math.sin(b.time * 0.05) * 0.0001 });
+                    if (body.position.x < 50) { Body.setVelocity(body, { x: 1.5, y: body.velocity.y }); b.flyDirX = 1; }
+                    if (body.position.x > width - 50) { Body.setVelocity(body, { x: -1.5, y: body.velocity.y }); b.flyDirX = -1; }
+                    if (body.position.y < 50) { Body.setVelocity(body, { x: body.velocity.x, y: 1 }); }
+                    if (body.position.y > height - 180) { Body.setVelocity(body, { x: body.velocity.x, y: -1 }); }
+                    Body.setAngle(body, 0); 
+                }
+            });
+
+            for (let i = fires.length - 1; i >= 0; i--) {
+                const f = fires[i]; f.time++;
+                if (Query.collides(f.body, groundBodies).length > 0 || Query.collides(f.body, lines.map(l => l.body)).length > 0) Body.setStatic(f.body, true);
+                for (let j = rains.length - 1; j >= 0; j--) {
+                    if (Vector.magnitude(Vector.sub(f.body.position, rains[j].body.position)) < 25) { 
+                        Composite.remove(world, rains[j].body); rains.splice(j, 1);
+                        Composite.remove(world, f.body); fires.splice(i, 1); break; 
+                    }
+                }
+                if (fires[i] && (f.time > 600 || f.body.position.y > height + 50)) { Composite.remove(world, f.body); fires.splice(i, 1); }
+            }
+
+            for (let i = fallenStars.length - 1; i >= 0; i--) {
+                if (fallenStars[i].body.position.y > height + 50) { Composite.remove(world, fallenStars[i].body); fallenStars.splice(i, 1); }
+            }
+
+            for (let i = lines.length - 1; i >= 0; i--) { lines[i].life--; if (lines[i].life <= 0) { Composite.remove(world, lines[i].body); lines.splice(i, 1); } }
+            for (let i = drawnObjects.length - 1; i >= 0; i--) { drawnObjects[i].life--; if (drawnObjects[i].life <= 0 || drawnObjects[i].body.position.y > height + 200) { Composite.remove(world, drawnObjects[i].body); drawnObjects.splice(i, 1); } }
+            for (let i = bubbles.length - 1; i >= 0; i--) { if (bubbles[i].x < -100 || bubbles[i].x > width + 100) bubbles.splice(i, 1); }
+            for (let i = clouds.length - 1; i >= 0; i--) { if (clouds[i].x < -200 || clouds[i].x > width + 200) clouds.splice(i, 1); }
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i]; p.life--; p.x += p.vx; p.y += p.vy; p.vy += 0.08; p.spikes.forEach(s => { s.len = Math.max(0, s.len - 0.1); }); if (p.life <= 0) particles.splice(i, 1);
+            }
+            for (let i = ripples.length - 1; i >= 0; i--) { ripples[i].r += 2; ripples[i].life--; if (ripples[i].life <= 0) ripples.splice(i, 1); }
+            
+            for (let i = snowmen.length - 1; i >= 0; i--) {
+                let sm = snowmen[i];
+                sm.time++;
+                if (sm.body.position.y > height + 50) {
+                    Composite.remove(world, sm.body);
+                    if(sm.owner) sm.owner.ownsSnowman = null;
+                    snowmen.splice(i, 1);
+                }
+            }
+            
+            world.bodies.forEach(b => { if(b.label === 'note' && b.position.y > height + 50) Composite.remove(world, b); });
+        });
+
+        setInterval(() => { if (bubbles.length < 18) createBubble(); }, 1000);
+        setInterval(() => { if (clouds.length < 4) createCloud(); }, 4000); 
+
+        // --- タッチ＆クリック操作 ---
+        let isDrawing = false; 
+        let currentPath = []; 
+        let currentStrokeId = 0;
+        let grabbedBubble = null;
+        let touchStartPos = null;
+        let touchCurrentPos = null;
+
+        function handleStart(x, y) {
+            if(!audioCtx) { const AC = window.AudioContext || window.webkitAudioContext; if(AC) audioCtx = new AC(); }
+            if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+            startBGM();
+
+            touchStartPos = { x, y }; touchCurrentPos = { x, y };
+            let intercepted = false;
+
+            // ★ 雪だるまの派手な粉砕処理
+            for (let i = 0; i < snowmen.length; i++) {
+                let sm = snowmen[i];
+                if (Math.hypot(sm.body.position.x - x, sm.body.position.y - y) < 40) {
+                    createSplatterParticles(sm.body.position.x, sm.body.position.y, '#99ccff');
+                    createSnowShards(sm.body.position.x, sm.body.position.y);
+                    sounds.pop(); Composite.remove(world, sm.body); 
+                    if(sm.owner) sm.owner.ownsSnowman = null;
+                    snowmen.splice(i, 1); intercepted = true; break;
+                }
+            }
+            if (intercepted) return;
+
+            for (let i = 0; i < trees.length; i++) {
+                let t = trees[i];
+                if (Math.hypot(t.body.position.x - x, t.body.position.y - y) < 40 * t.scale) {
+                    if (!t.isHouse) {
+                        t.isHouse = true; t.scale = 2; sounds.magic();
+                        Matter.Body.scale(t.body, 2, 2);
+                        Matter.Body.setPosition(t.body, { x: t.body.position.x, y: t.body.position.y - 30 });
+                        createSplatterParticles(t.body.position.x, t.body.position.y, pastelBrown);
+                    } else {
+                        if (t.occupants.length > 0) {
+                            t.occupants.forEach(d => {
+                                d.inHouse = false; d.houseRef = null; Body.setStatic(d.body, false);
+                                d.ignoreThreatTimer = 600; 
+                                Body.setPosition(d.body, {x: t.body.position.x, y: t.body.position.y});
+                                Body.setVelocity(d.body, {x: (Math.random()-0.5)*8, y: -6});
+                            });
+                            t.occupants = []; sounds.pop();
+                        }
+                    }
+                    intercepted = true; break;
+                }
+            }
+            if (intercepted) return;
+
+            for(let i=0; i<drawnObjects.length; i++) {
+                let obj = drawnObjects[i];
+                if(Query.point([obj.body], {x, y}).length > 0) {
+                    sounds.pop(); createSplatterParticles(obj.body.position.x, obj.body.position.y, obj.color); 
+                    Composite.remove(world, obj.body); drawnObjects.splice(i, 1); intercepted = true; break;
+                }
+            }
+            if (intercepted) return;
+
+            for (let i = 0; i < fallenStars.length; i++) {
+                let s = fallenStars[i];
+                if (Math.hypot(s.body.position.x - x, s.body.position.y - y) < 40) {
+                    createSplatterParticles(s.body.position.x, s.body.position.y, pastelYellow); sounds.magic(); 
+                    Composite.remove(world, s.body); fallenStars.splice(i, 1); intercepted = true; break;
+                }
+            }
+            if (intercepted) return;
+            
+            for (let i = bubbles.length - 1; i >= 0; i--) {
+                const b = bubbles[i];
+                if (Math.hypot(b.x - x, b.y - y) < b.radius + 15) { grabbedBubble = b; intercepted = true; break; }
+            }
+            if (intercepted) return;
+
+            for (let c of clouds) { 
+                if (Math.hypot(c.x - x, c.y - y) < c.radius * 1.5) { 
+                    if(c.type === 'white') { c.isRaining = true; c.rainTimer = 600; sounds.rain(); } 
+                    else if(c.type === 'thunder' && !c.isStriking) { c.isStriking = true; c.strikeTimer = 15; triggerLightning(c.x); }
+                    intercepted = true; break; 
+                } 
+            }
+            if (intercepted) return;
+
+            for (let i = 0; i < particles.length; i++) {
+                const p = particles[i];
+                if (x > p.x - p.baseRadius - 30 && x < p.x + p.baseRadius + 30 && y > p.y - p.baseRadius - 30 && y < p.y + p.baseRadius + 30 && p.life > 10) { 
+                    currentColor = p.color; sounds.pop(); intercepted = true; particles.splice(i, 1); break; 
+                }
+            }
+            if (intercepted) return;
+
+            isDrawing = true; currentStrokeId++; currentPath = [{ x, y }]; 
+        }
+
+        function handleMove(x, y) {
+            touchCurrentPos = { x, y };
+
+            dwarfs.forEach(d => {
+                if (d.isCharred && !d.inHouse) {
+                    if (Math.hypot(d.body.position.x - x, d.body.position.y - y) < 35) {
+                        d.scrubCount = (d.scrubCount || 0) + 1;
+                        if (Math.random() < 0.3) {
+                            particles.push({ x: x + (Math.random()-0.5)*15, y: y + (Math.random()-0.5)*15, vx: (Math.random()-0.5)*2, vy: (Math.random()-0.5)*2, life: 20, color: '#ffffff', baseRadius: 1.5, spikes: [] });
+                        }
+                        if (d.scrubCount > 15) {
+                            d.isCharred = false; d.charredTimer = 0; d.scrubCount = 0; sounds.magic();
+                            createSplatterParticles(d.body.position.x, d.body.position.y, '#ffffff');
+                        }
+                    }
+                }
+            });
+
+            if (grabbedBubble) { grabbedBubble.x = x; grabbedBubble.y = y; grabbedBubble.baseY = y; grabbedBubble.targetY = y; return; }
+
+            if (!isDrawing) return;
+            let lastP = currentPath[currentPath.length - 1]; let dist = Math.hypot(x - lastP.x, y - lastP.y);
+            if (dist > 15) {
+                let cx = (x + lastP.x)/2; let cy = (y + lastP.y)/2; let angle = Math.atan2(y - lastP.y, x - lastP.x);
+                let body = Bodies.rectangle(cx, cy, dist + 2, 8, { isStatic: true, angle: angle, friction: 0.8, label: 'line' }); 
+                Composite.add(world, body); lines.push({ body, color: currentColor, life: 1000, width: dist+2, height: 8, strokeId: currentStrokeId });
+                currentPath.push({ x, y });
+            }
+        }
+
+        function handleEnd() { 
+            if (grabbedBubble) {
+                let dist = Math.hypot(touchCurrentPos.x - touchStartPos.x, touchCurrentPos.y - touchStartPos.y);
+                if (dist < 15) popBubble(grabbedBubble);
+                grabbedBubble = null;
+            }
+
+            if (isDrawing && currentPath.length > 5) {
+                let start = currentPath[0]; let end = currentPath[currentPath.length - 1];
+                let dx = Math.abs(end.x - start.x); let dy = Math.abs(end.y - start.y);
+                
+                if (dx > width * 0.3 && dy < 150) {
+                    let minY = height; currentPath.forEach(p => { if (p.y < minY) minY = p.y; });
+                    if (minY < Math.min(start.y, end.y) - 50) {
+                        sounds.magic();
+                        magicSkies.push({ type: isNight ? 'aurora' : 'rainbow', x: (start.x + end.x)/2, y: minY + (Math.min(start.y, end.y)-minY)/2, w: dx, h: Math.min(start.y, end.y)-minY, life: 600, time: 0 });
+                        for (let i = lines.length - 1; i >= 0; i--) { if (lines[i].strokeId === currentStrokeId) { Composite.remove(world, lines[i].body); lines.splice(i, 1); } }
+                        isDrawing = false; currentPath = []; touchStartPos = null; touchCurrentPos = null; return;
+                    }
+                }
+                if (Math.hypot(start.x - end.x, start.y - end.y) < 60) { createDrawnObject(currentPath, currentColor, currentStrokeId); }
+            }
+            isDrawing = false; currentPath = []; touchStartPos = null; touchCurrentPos = null;
+        }
+
+        window.addEventListener('mousedown', e => handleStart(e.clientX, e.clientY)); window.addEventListener('mousemove', e => handleMove(e.clientX, e.clientY));
+        window.addEventListener('mouseup', handleEnd); window.addEventListener('touchstart', e => handleStart(e.touches[0].clientX, e.touches[0].clientY), {passive:false});
+        window.addEventListener('touchmove', e => { e.preventDefault(); handleMove(e.touches[0].clientX, e.touches[0].clientY); }, {passive:false}); window.addEventListener('touchend', handleEnd);
+
+        // --- 描画エンジン ---
+        function render() {
+            requestAnimationFrame(render);
+            
+            const t = Date.now() * 0.0005;
+            const cx = width / 2; const cy = height / 2; const r = Math.max(width, height);
+            const x0 = cx + Math.cos(t * 0.2) * r; const y0 = cy + Math.sin(t * 0.3) * r;
+            const x1 = cx - Math.cos(t * 0.2) * r; const y1 = cy - Math.sin(t * 0.3) * r;
+
+            const bgGradient = ctx.createLinearGradient(x0, y0, x1, y1);
+            if (isNight) {
+                bgGradient.addColorStop(0, '#1a1a3a'); bgGradient.addColorStop(0.5, '#2b2045'); bgGradient.addColorStop(1, '#4a3b5c'); 
+                ctx.fillStyle = bgGradient; ctx.fillRect(0, 0, width, height);
+                ctx.fillStyle = '#ffffff';
+                stars.forEach(s => { ctx.globalAlpha = 0.3 + Math.sin(t*2 + s.x)*0.7; ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI*2); ctx.fill(); });
+                ctx.globalAlpha = 1.0;
+            } else {
+                bgGradient.addColorStop(0, '#ffd9e6'); bgGradient.addColorStop(0.5, '#e6e6ff'); bgGradient.addColorStop(1, '#d9f2ff'); 
+                ctx.fillStyle = bgGradient; ctx.fillRect(0, 0, width, height);
+                ctx.globalCompositeOperation = 'source-over';
+                function drawMarbleBlob(x, y, rad, color) {
+                    let grad = ctx.createRadialGradient(x, y, 0, x, y, rad);
+                    grad.addColorStop(0, color); grad.addColorStop(1, 'rgba(255,255,255,0)');
+                    ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI*2); ctx.fill();
+                }
+                drawMarbleBlob(width*0.3 + Math.sin(t)*100, height*0.4 + Math.cos(t*0.8)*100, width*0.6, 'rgba(255, 150, 180, 0.4)'); 
+                drawMarbleBlob(width*0.7 + Math.cos(t*1.2)*100, height*0.6 + Math.sin(t*0.9)*100, width*0.6, 'rgba(150, 200, 255, 0.5)'); 
+                drawMarbleBlob(width*0.5 + Math.sin(t*0.7)*150, height*0.2 + Math.cos(t*1.1)*100, width*0.5, 'rgba(255, 255, 150, 0.4)'); 
+                drawMarbleBlob(width*0.2 + Math.cos(t*1.3)*100, height*0.8 + Math.sin(t*0.6)*100, width*0.5, 'rgba(150, 255, 150, 0.3)'); 
+            }
+
+            ctx.globalCompositeOperation = 'source-over';
+            
+            snowflakes.forEach(sf => {
+                ctx.save(); ctx.translate(sf.x, sf.y); ctx.rotate(sf.angle);
+                ctx.fillStyle = 'rgba(255,255,255,0.8)';
+                ctx.beginPath(); ctx.arc(0, 0, sf.size, 0, Math.PI*2); ctx.fill();
+                ctx.restore();
+            });
+            
+            ctx.strokeStyle = isNight ? '#555' : '#cccccc'; ctx.lineWidth = 4; ctx.beginPath();
+            const segmentWidth = width / groundSegments;
+            for (let i = 0; i <= groundSegments; i++) {
+                const x = i * segmentWidth; const y = height - 40 + Math.sin(Math.min(i, groundSegments-1) * 0.8) * 25;
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+
+            magicSkies.forEach(rb => {
+                rb.time++; ctx.save(); ctx.globalAlpha = Math.min(0.8, rb.life / 100);
+                if(rb.type === 'rainbow') {
+                    const colors = ['#ff9999', '#ffcc99', '#ffff99', '#99ff99', '#99ccff', '#cc99ff'];
+                    ctx.lineWidth = 15; ctx.lineCap = 'round';
+                    for(let i=0; i<colors.length; i++) {
+                        ctx.strokeStyle = colors[i]; ctx.beginPath(); ctx.ellipse(rb.x, rb.y + i*14, rb.w/2, rb.h, 0, Math.PI, 0); ctx.stroke();
+                    }
+                } else if(rb.type === 'aurora') {
+                    let aGrad = ctx.createLinearGradient(rb.x - rb.w/2, 0, rb.x + rb.w/2, 0);
+                    aGrad.addColorStop(0, 'rgba(150, 255, 200, 0)'); aGrad.addColorStop(0.3, 'rgba(150, 255, 200, 0.8)');
+                    aGrad.addColorStop(0.7, 'rgba(200, 150, 255, 0.8)'); aGrad.addColorStop(1, 'rgba(200, 150, 255, 0)');
+                    ctx.fillStyle = aGrad; ctx.beginPath();
+                    for(let x = -rb.w/2; x <= rb.w/2; x+=10) { let waveY = Math.sin(x*0.02 + rb.time*0.05) * 20; ctx.lineTo(rb.x + x, rb.y - rb.h + waveY); }
+                    for(let x = rb.w/2; x >= -rb.w/2; x-=10) { let waveY = Math.sin(x*0.03 + rb.time*0.04) * 30; ctx.lineTo(rb.x + x, rb.y + Math.max(50, rb.h*0.3) + waveY); }
+                    ctx.closePath(); ctx.fill();
+                }
+                ctx.restore();
+            });
+
+            trees.forEach(t => {
+                ctx.save(); ctx.translate(t.body.position.x, t.body.position.y);
+                ctx.scale(t.scale, t.scale); 
+                
+                ctx.fillStyle = pastelBrown; ctx.beginPath(); ctx.moveTo(-3, -10); ctx.lineTo(-8, 30); ctx.lineTo(8, 30); ctx.lineTo(3, -10); ctx.closePath(); ctx.fill(); 
+                
+                if (t.isHouse) {
+                    ctx.fillStyle = '#8d6e63'; ctx.fillRect(-6, 12, 12, 18);
+                    ctx.fillStyle = '#ffecb3'; ctx.beginPath(); ctx.arc(3, 22, 2, 0, Math.PI*2); ctx.fill();
+                }
+
+                ctx.fillStyle = t.isBurning ? '#ff8a65' : pastelGreen; ctx.beginPath(); ctx.ellipse(0, -15, 23, 33, 0, 0, Math.PI * 2); ctx.fill(); 
+                
+                if (t.isHouse && !t.isBurning) {
+                    ctx.fillStyle = '#fff9c4'; ctx.beginPath(); ctx.arc(0, -10, 8, 0, Math.PI*2); ctx.fill();
+                    ctx.strokeStyle = '#8d6e63'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, -10, 8, 0, Math.PI*2); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(-8, -10); ctx.lineTo(8, -10); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0, -18); ctx.lineTo(0, -2); ctx.stroke();
+                    
+                    if (t.occupants && t.occupants.length > 0) {
+                        ctx.save(); ctx.beginPath(); ctx.arc(0, -10, 7, 0, Math.PI*2); ctx.clip();
+                        let d = t.occupants[0]; 
+                        ctx.fillStyle = d.themeColor; ctx.beginPath(); ctx.arc(0, -5, 6, 0, Math.PI*2); ctx.fill(); 
+                        ctx.fillStyle = '#ffdbb5'; ctx.beginPath(); ctx.arc(0, -8, 3, 0, Math.PI*2); ctx.fill(); 
+                        ctx.fillStyle = '#555'; 
+                        let look = Math.sin(Date.now() * 0.005) * 1.5;
+                        ctx.beginPath(); ctx.arc(-1 + look, -8, 0.8, 0, Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(1 + look, -8, 0.8, 0, Math.PI*2); ctx.fill();
+                        ctx.restore();
+                    }
+                }
+
+                if (t.isBurning) { 
+                    const s = Math.sin(t.time * 0.25) * 4;
+                    ctx.fillStyle = pastelOrange; ctx.beginPath(); ctx.moveTo(0, -45 + s); ctx.quadraticCurveTo(-15, -15, -10, 10); ctx.lineTo(10, 10); ctx.quadraticCurveTo(15, -15, 0, -45 + s); ctx.closePath(); ctx.fill();
+                    ctx.fillStyle = '#ffffff'; ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.moveTo(0, -25 + s*0.5); ctx.quadraticCurveTo(-8, -5, -6, 10); ctx.lineTo(6, 10); ctx.quadraticCurveTo(8, -5, 0, -25 + s*0.5); ctx.closePath(); ctx.fill();
+                }
+                ctx.restore();
+            });
+
+            clouds.forEach(c => {
+                ctx.save(); ctx.translate(c.x, c.y); ctx.scale(c.scale, c.scale); ctx.globalAlpha = 0.8; 
+                if(c.type === 'thunder') { let isFlash = c.isStriking && Math.random() < 0.3; ctx.fillStyle = isFlash ? '#ffffff' : '#4a5568'; } else { ctx.fillStyle = '#ffffff'; }
+                ctx.beginPath(); ctx.arc(0, 0, c.radius, 0, Math.PI*2); ctx.arc(-c.radius*0.6, +c.radius*0.2, c.radius*0.7, 0, Math.PI*2); ctx.arc(+c.radius*0.6, +c.radius*0.2, c.radius*0.7, 0, Math.PI*2); ctx.fill(); 
+
+                if (c.isStriking) {
+                    ctx.strokeStyle = '#fffb00'; ctx.lineWidth = 4; ctx.shadowColor = '#ffaa00'; ctx.shadowBlur = 20; ctx.lineJoin = 'miter';
+                    ctx.beginPath(); let lx = 0; let ly = 0; ctx.moveTo(lx, ly);
+                    let segments = 6 + Math.floor(Math.random()*4); let branchIndex = Math.floor(segments / 2); let branchX, branchY;
+                    for(let k=0; k<segments; k++) { lx += (Math.random()-0.5)*60; ly += (height / segments); ctx.lineTo(lx, ly); if(k === branchIndex) { branchX = lx; branchY = ly; } }
+                    ctx.stroke();
+                    if(branchX) { ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(branchX, branchY); ctx.lineTo(branchX + (Math.random()>0.5?1:-1)*50, branchY + 60); ctx.stroke(); }
+                }
+                ctx.restore();
+            });
+
+            fallenStars.forEach(s => {
+                s.time++; ctx.save(); ctx.translate(s.body.position.x, s.body.position.y); ctx.rotate(s.body.angle);
+                let glow = Math.sin(s.time * 0.1) * 0.5 + 0.5; ctx.shadowColor = '#ffffaa'; ctx.shadowBlur = 10 + glow * 25;
+                ctx.fillStyle = '#fff9c4'; ctx.beginPath();
+                for(let i=0; i<5; i++){
+                    ctx.lineTo(Math.cos(i*Math.PI*0.4 - Math.PI/2)*20, Math.sin(i*Math.PI*0.4 - Math.PI/2)*20);
+                    ctx.lineTo(Math.cos(i*Math.PI*0.4 + Math.PI*0.2 - Math.PI/2)*8, Math.sin(i*Math.PI*0.4 + Math.PI*0.2 - Math.PI/2)*8);
+                }
+                ctx.closePath(); ctx.fill(); ctx.restore();
+            });
+
+            lines.forEach(l => {
+                ctx.save(); ctx.globalAlpha = Math.min(1, l.life / 100); ctx.translate(l.body.position.x, l.body.position.y); ctx.rotate(l.body.angle);
+                if (isNight) { ctx.shadowColor = l.color; ctx.shadowBlur = 15; }
+                ctx.beginPath(); ctx.moveTo(-l.width/2, 0); ctx.lineTo(l.width/2, 0); ctx.strokeStyle = l.color; ctx.lineWidth = l.height; ctx.lineCap = 'round'; ctx.stroke(); ctx.restore();
+            });
+
+            drawnObjects.forEach(obj => {
+                ctx.save(); ctx.fillStyle = getPattern(obj.color); 
+                if (isNight) { ctx.shadowColor = obj.color; ctx.shadowBlur = 15; }
+                ctx.beginPath();
+                obj.body.parts.forEach((part, i) => {
+                    if (i === 0 && obj.body.parts.length > 1) return; 
+                    part.vertices.forEach((v, j) => { if (j === 0) ctx.moveTo(v.x, v.y); else ctx.lineTo(v.x, v.y); }); ctx.closePath();
+                });
+                ctx.fill(); ctx.restore();
+            });
+
+            puddles.forEach(p => {
+                ctx.save(); ctx.globalAlpha = Math.min(1, p.life / 100) * 0.6; ctx.fillStyle = '#99ddff';
+                ctx.beginPath(); ctx.ellipse(p.x, p.y, p.width/2, 6, 0, 0, Math.PI*2); ctx.fill(); ctx.restore();
+            });
+
+            plants.forEach(pl => {
+                ctx.save(); ctx.translate(pl.baseX, pl.baseY); ctx.scale(pl.scale, pl.scale);
+                let sway = Math.sin(pl.time * 0.05) * 0.2; ctx.rotate(sway);
+                if (pl.type === 'flower') {
+                    ctx.strokeStyle = pastelGreen; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+                    ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(5, -15, 0, -30); ctx.stroke();
+                    if(pl.isBud) {
+                        ctx.translate(0, -30); ctx.fillStyle = pl.color;
+                        ctx.beginPath(); ctx.ellipse(0, -5, 8, 12, 0, 0, Math.PI*2); ctx.fill();
+                    } else {
+                        ctx.fillStyle = pl.isBurning ? '#ff8a65' : pastelGreen;
+                        ctx.beginPath(); ctx.ellipse(8, -10, 6, 3, Math.PI/4, 0, Math.PI*2); ctx.fill();
+                        ctx.beginPath(); ctx.ellipse(-6, -18, 5, 2.5, -Math.PI/4, 0, Math.PI*2); ctx.fill();
+                        ctx.translate(0, -30); ctx.fillStyle = pl.isBurning ? '#ff5722' : pl.color; 
+                        for(let i=0; i<5; i++) { ctx.rotate(Math.PI*2 / 5); ctx.beginPath(); ctx.ellipse(0, -8, 6, 10, 0, 0, Math.PI*2); ctx.fill(); }
+                        ctx.fillStyle = pastelYellow; ctx.beginPath(); ctx.arc(0, 0, 6, 0, Math.PI*2); ctx.fill();
+                    }
+                } else if (pl.type === 'mushroom') {
+                    ctx.fillStyle = '#ffeedd'; ctx.beginPath(); ctx.moveTo(-4, 0); ctx.lineTo(-3, -15); ctx.lineTo(3, -15); ctx.lineTo(4, 0); ctx.fill();
+                    ctx.translate(0, -15); ctx.fillStyle = pl.isBurning ? '#ff5722' : '#ff6b6b'; ctx.beginPath(); ctx.arc(0, 0, 15, Math.PI, 0); ctx.closePath(); ctx.fill();
+                    if(!pl.isBurning) {
+                        ctx.fillStyle = '#ffffff';
+                        ctx.beginPath(); ctx.arc(-7, -6, 3, 0, Math.PI*2); ctx.fill();
+                        ctx.beginPath(); ctx.arc(6, -8, 2.5, 0, Math.PI*2); ctx.fill();
+                        ctx.beginPath(); ctx.arc(0, -11, 2, 0, Math.PI*2); ctx.fill();
+                    }
+                }
+                if (pl.isBurning) {
+                    const s = Math.sin(pl.time * 0.25) * 4;
+                    ctx.fillStyle = pastelOrange; ctx.beginPath(); ctx.moveTo(0, -15 + s); ctx.quadraticCurveTo(-15, 5, -10, 20); ctx.lineTo(10, 20); ctx.quadraticCurveTo(15, 5, 0, -15 + s); ctx.closePath(); ctx.fill();
+                    ctx.fillStyle = '#ffffff'; ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.moveTo(0, -5 + s*0.5); ctx.quadraticCurveTo(-8, 10, -6, 20); ctx.lineTo(6, 20); ctx.quadraticCurveTo(8, 10, 0, -5 + s*0.5); ctx.closePath(); ctx.fill();
+                }
+                ctx.restore();
+            });
+
+            seeds.forEach(s => {
+                ctx.save(); ctx.translate(s.body.position.x, s.body.position.y); ctx.rotate(s.body.angle);
+                ctx.fillStyle = pastelBrown; ctx.beginPath(); ctx.ellipse(0, 2, 4, 3, 0, 0, Math.PI*2); ctx.fill();
+                ctx.fillStyle = pastelGreen; ctx.beginPath(); ctx.ellipse(4, -2, 4, 2, -Math.PI/4, 0, Math.PI*2); ctx.fill(); ctx.restore();
+            });
+
+            ripples.forEach(r => {
+                ctx.save(); ctx.globalAlpha = r.life / 30; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.ellipse(r.x, r.y, r.r, r.r*0.5, 0, 0, Math.PI*2); ctx.stroke(); ctx.restore();
+            });
+
+            world.bodies.forEach(b => {
+                if(b.label === 'note') {
+                    ctx.save(); ctx.translate(b.position.x, b.position.y); ctx.rotate(b.angle); ctx.scale(1.5, 1.5);
+                    ctx.fillStyle = pastelYellow; ctx.beginPath(); ctx.arc(-3, 3, 6, 0, Math.PI*2); ctx.fill();
+                    ctx.strokeStyle = pastelYellow; ctx.lineWidth = 3; ctx.lineCap = 'round';
+                    ctx.beginPath(); ctx.moveTo(3, 3); ctx.lineTo(3, -9); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(3,-9); ctx.quadraticCurveTo(10, -9, 10, -3); ctx.stroke();
+                    ctx.restore();
+                }
+            });
+
+            caterpillars.forEach(c => {
+                ctx.save(); ctx.translate(c.body.position.x, c.body.position.y); ctx.scale(1.5, 1.5);
+                if(c.state === 'crawling') {
+                    ctx.scale(c.dir, 1); const w = Math.sin(c.time * 0.2) * 2;
+                    ctx.fillStyle = pastelGreen; 
+                    ctx.beginPath(); ctx.arc(-6 + w, 0, 5, 0, Math.PI*2); ctx.fill(); 
+                    ctx.beginPath(); ctx.arc(0, -w, 5, 0, Math.PI*2); ctx.fill(); 
+                    ctx.beginPath(); ctx.arc(6 + w, 0, 5, 0, Math.PI*2); ctx.fill(); 
+                    ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(8+w, -1, 1, 0, Math.PI*2); ctx.fill();
+                } else { ctx.fillStyle = pastelYellow; ctx.beginPath(); ctx.ellipse(0, 0, 6, 10, Math.PI/4, 0, Math.PI*2); ctx.fill(); }
+                ctx.restore();
+            });
+
+            butterflies.forEach(b => {
+                ctx.save(); ctx.translate(b.body.position.x, b.body.position.y); ctx.scale(1.5, 1.5);
+                const flap = Math.sin(b.time * 0.5) * 8;
+                ctx.fillStyle = pastelPink; 
+                ctx.beginPath(); ctx.ellipse(-5 + flap/2, -5, 6, 8, Math.PI/4, 0, Math.PI*2); ctx.fill(); 
+                ctx.beginPath(); ctx.ellipse(5 - flap/2, -5, 6, 8, -Math.PI/4, 0, Math.PI*2); ctx.fill(); 
+                ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(0, 0, 2, 6, 0, 0, Math.PI*2); ctx.fill();
+                ctx.restore();
+            });
+
+            dwarfs.forEach(d => {
+                if (d.inHouse) return; 
+
+                const sf = d.scaleFactor; ctx.save();
+                ctx.translate(d.body.position.x, d.body.position.y); 
+                let tilt = d.body.velocity.x * 0.1; tilt = Math.max(-0.4, Math.min(0.4, tilt)); ctx.rotate(tilt);
+                if (d.direction === -1) ctx.scale(-1, 1);  
+                ctx.translate(0, -6 * sf); 
+
+                if (d.snowmanTimer && d.snowmanTimer > 0) ctx.translate(Math.sin(d.snowmanTimer * 0.5) * 2, 0);
+
+                const time = Date.now() * 0.015 * Math.max(1, Math.abs(d.body.velocity.x));
+                const legWobble = Math.sin(time) * 4*sf; const armWobble = Math.cos(time) * 3*sf;
+
+                const skinColor = d.isCharred ? '#333' : '#ffdbb5'; const clothesColor = d.isCharred ? '#444' : d.themeColor;
+                const beardColor = d.isCharred ? '#222' : '#ffffff'; const shoeColor = d.isCharred ? '#111' : softCharcoal;
+                const eyeColor = d.isCharred ? '#ffffff' : softCharcoal;
+
+                ctx.fillStyle = shoeColor;
+                ctx.beginPath(); ctx.ellipse(-4*sf, 12*sf + legWobble, 3*sf, 2.5*sf, 0, 0, Math.PI*2); ctx.fill(); 
+                ctx.beginPath(); ctx.ellipse(4*sf, 12*sf - legWobble, 3*sf, 2.5*sf, 0, 0, Math.PI*2); ctx.fill(); 
+
+                ctx.fillStyle = clothesColor; ctx.beginPath(); ctx.arc(0, 4*sf, 9*sf, 0, Math.PI*2); ctx.fill(); 
+
+                ctx.beginPath();
+                if (d.isGrabbed) { ctx.arc(9*sf, -4*sf, 3*sf, 0, Math.PI*2); ctx.fill(); ctx.arc(-9*sf, -4*sf, 3*sf, 0, Math.PI*2); ctx.fill(); 
+                } else { ctx.arc(9*sf, 6*sf + armWobble, 3*sf, 0, Math.PI*2); ctx.fill(); ctx.arc(-9*sf, 6*sf - armWobble, 3*sf, 0, Math.PI*2); ctx.fill(); }
+
+                if (isNight && !d.isCharred) { ctx.fillStyle = 'rgba(255, 255, 100, 0.8)'; ctx.shadowColor = '#ffffaa'; ctx.shadowBlur = 10; ctx.beginPath(); ctx.arc(12*sf, 8*sf, 3*sf, 0, Math.PI*2); ctx.fill(); ctx.shadowBlur = 0; }
+
+                ctx.fillStyle = beardColor; ctx.beginPath(); ctx.moveTo(-9*sf, -1*sf); ctx.quadraticCurveTo(-11*sf, 12*sf, 0, 16*sf); ctx.quadraticCurveTo(11*sf, 12*sf, 9*sf, -1*sf); ctx.quadraticCurveTo(0, -4*sf, -9*sf, -1*sf); ctx.fill(); 
+                ctx.fillStyle = skinColor; ctx.beginPath(); ctx.arc(0, -1*sf, 3.5*sf, 0, Math.PI*2); ctx.fill(); 
+                ctx.fillStyle = eyeColor; ctx.beginPath(); ctx.arc(-1.5*sf, -2.5*sf, 0.8*sf, 0, Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(1.5*sf, -2.5*sf, 0.8*sf, 0, Math.PI*2); ctx.fill();
+
+                ctx.fillStyle = clothesColor; ctx.beginPath();
+                if (d.type === 0) { ctx.moveTo(-10*sf, 0); ctx.quadraticCurveTo(0, -3*sf, 10*sf, 0); ctx.lineTo(0, -20*sf); ctx.closePath();
+                } else if (d.type === 1) { ctx.moveTo(-10*sf, 0); ctx.quadraticCurveTo(0, -3*sf, 10*sf, 0); ctx.quadraticCurveTo(4*sf, -16*sf, -8*sf, -18*sf); ctx.quadraticCurveTo(0, -10*sf, -10*sf, 0);
+                } else if (d.type === 2) { ctx.moveTo(-10*sf, 0); ctx.quadraticCurveTo(0, -3*sf, 10*sf, 0); ctx.quadraticCurveTo(12*sf, -14*sf, 0, -16*sf); ctx.quadraticCurveTo(-12*sf, -14*sf, -10*sf, 0); }
+                ctx.fill(); 
+                ctx.restore();
+            });
+
+            // ★ 雪だるまの描画
+            snowmen.forEach(sm => {
+                ctx.save(); ctx.translate(sm.body.position.x, sm.body.position.y);
+                ctx.scale(2.0, 2.0); 
+                let wobble = Math.sin(sm.time * 0.1) * 0.05; ctx.rotate(wobble + sm.body.angle);
+                ctx.fillStyle = '#ffffff';
+                ctx.beginPath(); ctx.arc(0, 8, 10, 0, Math.PI*2); ctx.fill();
+                ctx.beginPath(); ctx.arc(0, -5, 7, 0, Math.PI*2); ctx.fill();
+                ctx.fillStyle = '#333';
+                ctx.beginPath(); ctx.arc(-2.5, -6, 1, 0, Math.PI*2); ctx.fill();
+                ctx.beginPath(); ctx.arc(2.5, -6, 1, 0, Math.PI*2); ctx.fill();
+                ctx.beginPath(); ctx.arc(0, 4, 1.2, 0, Math.PI*2); ctx.fill();
+                ctx.beginPath(); ctx.arc(0, 9, 1.2, 0, Math.PI*2); ctx.fill();
+                ctx.fillStyle = pastelOrange;
+                ctx.beginPath(); ctx.moveTo(0, -4); ctx.lineTo(5, -2); ctx.lineTo(0, -2); ctx.fill();
+                ctx.restore();
+            });
+
+            // ★ 鬼の描画
+            onis.forEach(o => {
+                ctx.save(); ctx.translate(o.body.position.x, o.body.position.y);
+                let tilt = o.body.velocity.x * 0.05; ctx.rotate(tilt);
+                if (o.dir === -1) ctx.scale(-1, 1);
+                ctx.scale(o.scale, o.scale);
+                const bounce = Math.abs(Math.sin(o.time * 0.2)) * 3; ctx.translate(0, -bounce);
+                
+                ctx.fillStyle = o.color;
+                ctx.beginPath(); ctx.ellipse(0, 5, 12, 10, 0, 0, Math.PI*2); ctx.fill();
+                ctx.beginPath(); ctx.arc(0, -5, 10, 0, Math.PI*2); ctx.fill();
+                
+                ctx.fillStyle = '#ffecb3'; ctx.beginPath(); ctx.moveTo(-3, -13); ctx.lineTo(0, -22); ctx.lineTo(3, -13); ctx.fill();
+                ctx.strokeStyle = '#d4a373'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(-2, -16); ctx.lineTo(2, -16); ctx.stroke(); ctx.beginPath(); ctx.moveTo(-1, -19); ctx.lineTo(1, -19); ctx.stroke();
+
+                const patternStr = (o.time % 20 < 10) ? '#ffcc80' : '#ffe0b2'; 
+                ctx.fillStyle = patternStr; ctx.beginPath(); ctx.moveTo(-10, 8); ctx.lineTo(10, 8); ctx.lineTo(8, 15); ctx.lineTo(-8, 15); ctx.fill();
+                ctx.strokeStyle = '#555'; ctx.lineWidth=1; for(let i=-6; i<=6; i+=4) { ctx.beginPath(); ctx.moveTo(i, 8); ctx.lineTo(i-1, 14); ctx.stroke(); }
+                
+                ctx.fillStyle = o.color;
+                ctx.beginPath(); ctx.ellipse(-8, 15, 3, 4, 0, 0, Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.ellipse(8, 15, 3, 4, 0, 0, Math.PI*2); ctx.fill();
+                let armSwing = Math.sin(o.time * 0.2) * 5;
+                ctx.beginPath(); ctx.ellipse(-12, 2+armSwing, 4, 3, Math.PI/4, 0, Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.ellipse(10, 2-armSwing, 4, 3, -Math.PI/4, 0, Math.PI*2); ctx.fill();
+
+                ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(4, -5, 1.5, 0, Math.PI*2); ctx.fill(); 
+                ctx.beginPath(); ctx.moveTo(7, -3); ctx.quadraticCurveTo(4, 0, 1, -3); ctx.stroke(); 
+                ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(6, -1); ctx.lineTo(5, 2); ctx.lineTo(4, -1); ctx.fill();
+                ctx.restore();
+            });
+
+            fires.forEach(f => {
+                ctx.save(); ctx.translate(f.body.position.x, f.body.position.y); ctx.scale(2.5, 2.5); 
+                const s = Math.sin(f.time * 0.3) * 3;
+                ctx.fillStyle = pastelOrange; ctx.beginPath(); ctx.moveTo(0, -12 + s); ctx.quadraticCurveTo(-8, 0, -6, 8); ctx.lineTo(6, 8); ctx.quadraticCurveTo(8, 0, 0, -12 + s); ctx.fill();
+                ctx.fillStyle = '#ffffff'; ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.moveTo(0, -6 + s*0.5); ctx.quadraticCurveTo(-3, 2, -3, 8); ctx.lineTo(3, 8); ctx.quadraticCurveTo(3, 2, 0, -6 + s*0.5); ctx.fill();
+                ctx.restore();
+            });
+
+            birds.forEach(b => {
+                ctx.save(); ctx.translate(b.body.position.x, b.body.position.y);
+                const dirX = b.state === 'hunting' ? b.body.velocity.x : (b.flyDirX || b.body.velocity.x); if (dirX < 0) ctx.scale(-1, 1);
+                const bodyColor = '#b3d9ff'; const wingColor = '#80bfff'; const beakColor = '#ffffb3';
+                ctx.fillStyle = wingColor; ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(-18, -5); ctx.lineTo(-16, 5); ctx.closePath(); ctx.fill(); 
+                ctx.fillStyle = bodyColor; ctx.beginPath(); ctx.ellipse(0, 0, 14, 11, 0, 0, Math.PI*2); ctx.fill(); 
+                ctx.fillStyle = beakColor; ctx.beginPath(); ctx.moveTo(12, -2); ctx.lineTo(18, 1); ctx.lineTo(12, 4); ctx.closePath(); ctx.fill(); 
+                ctx.fillStyle = softCharcoal; ctx.beginPath(); ctx.arc(8, -2, 2.2, 0, Math.PI*2); ctx.fill();
+                const flap = Math.sin(b.time * 0.4) * 5;
+                ctx.fillStyle = wingColor; ctx.beginPath(); ctx.moveTo(-2, -3); ctx.quadraticCurveTo(-8, -8 + flap, 0, -6 + flap); ctx.quadraticCurveTo(8, -6 + flap, 6, 2); ctx.quadraticCurveTo(0, 7, -2, -3); ctx.fill(); 
+                ctx.restore();
+            });
+
+            bubbles.forEach(b => {
+                ctx.save(); ctx.translate(b.x, b.y);
+                const bubbleGrad = ctx.createRadialGradient(0, 0, b.radius*0.3, 0, 0, b.radius);
+                bubbleGrad.addColorStop(0, 'rgba(255, 255, 255, 0.1)'); bubbleGrad.addColorStop(0.4, 'rgba(255, 150, 200, 0.4)'); 
+                bubbleGrad.addColorStop(0.6, 'rgba(150, 200, 255, 0.4)'); bubbleGrad.addColorStop(0.8, 'rgba(150, 255, 150, 0.4)'); bubbleGrad.addColorStop(1.0, 'rgba(255, 255, 150, 0.4)'); 
+                
+                ctx.beginPath(); ctx.arc(0, 0, b.radius, 0, Math.PI*2); ctx.fillStyle = bubbleGrad; ctx.fill(); 
+                ctx.strokeStyle = bubbleGrad; ctx.lineWidth = 3; ctx.stroke();
+                ctx.beginPath(); ctx.arc(-b.radius*0.3, -b.radius*0.3, b.radius*0.3, Math.PI, Math.PI*1.5); ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)'; ctx.lineWidth = 1.5; ctx.stroke();
+                ctx.restore();
+
+                ctx.save(); ctx.translate(b.x, b.y); ctx.scale(1.8, 1.8);
+                if (b.type === 'paint') { 
+                    ctx.rotate(-Math.PI / 6); 
+                    ctx.fillStyle = '#fdfbd4'; ctx.fillRect(-5, -10, 10, 16);
+                    ctx.fillStyle = b.color; ctx.fillRect(-5, -12, 10, 2); ctx.fillRect(-5, 6, 10, 4);   
+                    ctx.beginPath(); ctx.moveTo(-5, 10); ctx.lineTo(5, 10); ctx.lineTo(0, 16); ctx.closePath(); ctx.fill();
+                } else if (b.type === 'fire') { 
+                    const s = Math.sin(b.time * 0.2) * 2; ctx.fillStyle = pastelOrange; ctx.beginPath(); ctx.moveTo(0, -9 + s); ctx.quadraticCurveTo(-6, 0, -5, 5); ctx.lineTo(5, 5); ctx.quadraticCurveTo(6, 0, 0, -9 + s); ctx.fill(); 
+                    ctx.fillStyle = '#fff'; ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.moveTo(0, -4 + s*0.5); ctx.quadraticCurveTo(-2, 0, -2, 5); ctx.lineTo(2, 5); ctx.quadraticCurveTo(2, 0, 0, -4 + s*0.5); ctx.fill();
+                } else if (b.type === 'tree') { 
+                    ctx.fillStyle = pastelBrown; ctx.beginPath(); ctx.moveTo(-1, -2); ctx.lineTo(-2, 4); ctx.lineTo(2, 4); ctx.lineTo(1, -2); ctx.fill();
+                    ctx.fillStyle = pastelGreen; ctx.beginPath(); ctx.ellipse(0, -3, 4, 6, 0, 0, Math.PI*2); ctx.fill(); 
+                } else if (b.type === 'bird') { 
+                    ctx.scale(0.5, 0.5); 
+                    const bodyColor = '#b3d9ff'; const wingColor = '#80bfff'; const beakColor = '#ffffb3';
+                    ctx.fillStyle = wingColor; ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(-18, -5); ctx.lineTo(-16, 5); ctx.closePath(); ctx.fill(); 
+                    ctx.fillStyle = bodyColor; ctx.beginPath(); ctx.ellipse(0, 0, 14, 11, 0, 0, Math.PI*2); ctx.fill(); 
+                    ctx.fillStyle = beakColor; ctx.beginPath(); ctx.moveTo(12, -2); ctx.lineTo(18, 1); ctx.lineTo(12, 4); ctx.closePath(); ctx.fill(); 
+                    ctx.fillStyle = softCharcoal; ctx.beginPath(); ctx.arc(8, -2, 2.2, 0, Math.PI*2); ctx.fill();
+                    ctx.fillStyle = wingColor; ctx.beginPath(); ctx.moveTo(-2, -3); ctx.quadraticCurveTo(-8, -8, 0, -6); ctx.quadraticCurveTo(8, -6, 6, 2); ctx.quadraticCurveTo(0, 7, -2, -3); ctx.fill(); 
+                } else if (b.type === 'seed') {
+                    ctx.fillStyle = pastelBrown; ctx.beginPath(); ctx.ellipse(0, 2, 4, 3, 0, 0, Math.PI*2); ctx.fill();
+                    ctx.fillStyle = pastelGreen; ctx.beginPath(); ctx.ellipse(4, -2, 4, 2, -Math.PI/4, 0, Math.PI*2); ctx.fill();
+                } else if (b.type === 'balloon') {
+                    ctx.fillStyle = b.color; ctx.beginPath(); ctx.ellipse(0, -3, 6, 7, 0, 0, Math.PI*2); ctx.fill();
+                    ctx.beginPath(); ctx.moveTo(-1, 4); ctx.lineTo(1, 4); ctx.lineTo(0, 5); ctx.fill();
+                    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, 5); ctx.lineTo(0, 10); ctx.stroke();
+                    ctx.fillStyle = '#ffffff'; ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.ellipse(-2, -5, 1.5, 3, Math.PI/4, 0, Math.PI*2); ctx.fill(); ctx.globalAlpha = 1.0;
+                } else if (b.type === 'moon') {
+                    ctx.fillStyle = pastelYellow; ctx.beginPath(); ctx.arc(0, 0, 6, 0, Math.PI*2); ctx.fill();
+                    ctx.globalCompositeOperation = 'destination-out'; ctx.beginPath(); ctx.arc(-2, -2, 5, 0, Math.PI*2); ctx.fill(); ctx.globalCompositeOperation = 'source-over';
+                } else if (b.type === 'sun') {
+                    ctx.fillStyle = pastelOrange; ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI*2); ctx.fill();
+                    for(let i=0; i<8; i++){ ctx.rotate(Math.PI/4); ctx.beginPath(); ctx.moveTo(0, -6); ctx.lineTo(0, -8); ctx.strokeStyle=pastelOrange; ctx.stroke(); }
+                } else if (b.type === 'caterpillar') {
+                    ctx.scale(1.2, 1.2); ctx.fillStyle = pastelGreen; 
+                    ctx.beginPath(); ctx.arc(-4, 0, 3, 0, Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(0, -1, 3, 0, Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(4, 0, 3, 0, Math.PI*2); ctx.fill(); 
+                    ctx.fillStyle = softCharcoal; ctx.beginPath(); ctx.arc(5, -1, 0.8, 0, Math.PI*2); ctx.fill();
+                } else if (b.type === 'note') {
+                    ctx.fillStyle = pastelYellow; ctx.beginPath(); ctx.arc(-2, 2, 3, 0, Math.PI*2); ctx.fill();
+                    ctx.strokeStyle = pastelYellow; ctx.lineWidth=1.5; ctx.beginPath(); ctx.moveTo(1, 2); ctx.lineTo(1, -4); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(1,-4); ctx.quadraticCurveTo(4, -4, 4, -1); ctx.stroke();
+                } else if (b.type === 'snow') {
+                    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5; ctx.lineCap = 'round';
+                    for (let i = 0; i < 6; i++) {
+                        ctx.save(); ctx.rotate(i * Math.PI / 3);
+                        ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -7); ctx.stroke();
+                        ctx.beginPath(); ctx.moveTo(0, -4); ctx.lineTo(-2.5, -6.5); ctx.stroke();
+                        ctx.beginPath(); ctx.moveTo(0, -4); ctx.lineTo(2.5, -6.5); ctx.stroke();
+                        ctx.restore();
+                    }
+                }
+                ctx.restore();
+            });
+            
+            // ★ 雨粒の描画（線を太く・長くしてはっきり見えるように）
+            ctx.strokeStyle = '#80bfff'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+            rains.forEach(r => {
+                const bp = r.body.position; const vel = r.body.velocity;
+                if(r.isStar) { 
+                    ctx.save(); ctx.translate(bp.x, bp.y); ctx.rotate(Date.now()*0.01); ctx.fillStyle = pastelYellow; ctx.beginPath();
+                    for(let i=0; i<5; i++){ ctx.lineTo(Math.cos(i*Math.PI*0.4)*4, Math.sin(i*Math.PI*0.4)*4); ctx.lineTo(Math.cos(i*Math.PI*0.4 + Math.PI*0.2)*2, Math.sin(i*Math.PI*0.4 + Math.PI*0.2)*2); }
+                    ctx.closePath(); ctx.fill(); ctx.restore();
+                } else { 
+                    ctx.beginPath(); ctx.moveTo(bp.x, bp.y); 
+                    ctx.lineTo(bp.x - vel.x * 2, bp.y - Math.max(vel.y * 2, 5)); 
+                    ctx.stroke(); 
+                }
+            });
+            
+            particles.forEach(p => {
+                ctx.save(); ctx.globalAlpha = Math.max(0, p.life / 200); ctx.translate(p.x, p.y); ctx.fillStyle = p.color;
+                ctx.beginPath(); ctx.arc(0, 0, p.baseRadius, 0, Math.PI * 2); ctx.fill();
+                p.spikes.forEach(s => {
+                    if (s.len > 0) {
+                        ctx.beginPath(); ctx.moveTo(0, 0); const w = p.baseRadius * 0.6;
+                        ctx.lineTo(Math.cos(s.angle - 1.5) * w, Math.sin(s.angle - 1.5) * w);
+                        ctx.lineTo(Math.cos(s.angle) * (p.baseRadius + s.len), Math.sin(s.angle) * (p.baseRadius + s.len));
+                        ctx.lineTo(Math.cos(s.angle + 1.5) * w, Math.sin(s.angle + 1.5) * w); ctx.fill();
+                    }
+                });
+                ctx.restore();
+            });
+        }
+
+        render();
+        const runner = Runner.create(); Runner.run(runner, engine);
+    </script>
+</body>
+</html>
