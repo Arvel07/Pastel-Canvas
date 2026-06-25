@@ -1,14 +1,25 @@
+Androidスマホでうまく動かなかったとのこと、ご不便をおかけしました！
+
+原因は、スマホのブラウザ（Chromeなど）の厳しいセキュリティ制限にありました。
+画面に指が触れた瞬間（touchstart）にフルスクリーン化しようとすると、「ユーザーがちゃんとボタンを押したか判定できない」としてブラウザに弾かれてしまう仕様になっていたようです。
+
+指を離した瞬間（click）に作動するようにプログラムを修正しました。これでAndroidでもバッチリ全画面になり、横向きにロックされるはずです！
+
+さらに、万が一ブラウザの都合で横向き固定が失敗してしまった時のために、文字が読めない３歳児でも「スマホを横に倒すんだな」と一目でわかるアニメーション画面を追加しました！
+
+以下のコードをコピーして、canvas_ver1.0.html をすべて上書きしてください。
+
 <!DOCTYPE html>
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>魔法のパステルキャンバス - 完全版</title>
+    <title>魔法のパステルキャンバス - スマホ完全対応版</title>
     <style>
         body { margin: 0; padding: 0; overflow: hidden; background-color: #fdfbfb; touch-action: none; font-family: sans-serif; user-select: none; -webkit-user-select: none; }
         canvas { display: block; }
 
-        /* ★ 3歳児にもわかりやすい「スタート画面」 */
+        /* ★ スタート画面 */
         #start-screen {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: linear-gradient(135deg, #ffd9e6, #e6e6ff);
@@ -29,11 +40,43 @@
             0%, 100% { transform: translateY(0); }
             50% { transform: translateY(-15px); }
         }
+
+        /* ★ 万が一縦持ちになった時の「横にしてね」アニメーション画面 */
+        #rotate-screen {
+            display: none;
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(253, 251, 251, 0.95); z-index: 9999;
+            flex-direction: column; justify-content: center; align-items: center;
+        }
+        /* スタート後に縦画面だったら表示する */
+        @media screen and (orientation: portrait) {
+            body.started #rotate-screen { display: flex; }
+        }
+        .phone-icon {
+            width: 80px; height: 140px;
+            border: 8px solid #ff80ab; border-radius: 15px;
+            position: relative;
+            animation: rotatePhone 2s infinite ease-in-out;
+        }
+        .phone-icon::after {
+            content: ''; position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+            width: 20px; height: 20px; background: #ff80ab; border-radius: 50%;
+        }
+        @keyframes rotatePhone {
+            0% { transform: rotate(0deg); }
+            50% { transform: rotate(-90deg); }
+            100% { transform: rotate(-90deg); }
+        }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/poly-decomp@0.3.0/build/decomp.min.js"></script>
 </head>
 <body>
+    <!-- ★ 縦持ち時に表示される画面 -->
+    <div id="rotate-screen">
+        <div class="phone-icon"></div>
+    </div>
+
     <!-- ★ スタート画面 -->
     <div id="start-screen">
         <h1>まほうのパステルキャンバス</h1>
@@ -54,7 +97,7 @@
         const engine = Engine.create();
         const world = engine.world;
 
-        // --- フルスクリーンと横向き固定 ---
+        // ★ フルスクリーン化と横向き固定の魔法（Android対策で調整）
         function tryFullscreenAndLock() {
             let el = document.documentElement;
             let req = el.requestFullscreen || el.webkitRequestFullscreen;
@@ -162,22 +205,15 @@
             }, 220); 
         }
 
-        // --- スタート画面の処理 ---
+        // ★ スタート画面がクリックされた時（Androidなどに対応するためclickイベントを使用）
         document.getElementById('start-screen').addEventListener('click', function() {
             tryFullscreenAndLock();
             if(!audioCtx) { const AC = window.AudioContext || window.webkitAudioContext; if(AC) audioCtx = new AC(); }
             if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
             startBGM();
             this.style.display = 'none'; // スタート画面を消す
+            document.body.classList.add('started'); // 縦画面時のアニメーションを有効にする
         });
-        document.getElementById('start-screen').addEventListener('touchstart', function(e) {
-            e.preventDefault();
-            tryFullscreenAndLock();
-            if(!audioCtx) { const AC = window.AudioContext || window.webkitAudioContext; if(AC) audioCtx = new AC(); }
-            if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
-            startBGM();
-            this.style.display = 'none';
-        }, {passive: false});
 
         const dwarfs = []; const lines = []; const drawnObjects = []; const bubbles = [];
         const rains = []; const clouds = []; const particles = []; const ripples = []; 
@@ -226,6 +262,15 @@
             width = window.innerWidth; height = window.innerHeight; 
             canvas.width = width; canvas.height = height; 
             createBoundaries(); 
+            
+            // ★ リサイズ時の画面外救済システム
+            world.bodies.forEach(b => {
+                if (b.isStatic || b.label === 'line') return; 
+                let changed = false; let newX = b.position.x; let newY = b.position.y;
+                if (newX > width - 20) { newX = width - 50; changed = true; }
+                else if (newX < 20) { newX = 50; changed = true; }
+                if (changed) { Body.setPosition(b, { x: newX, y: newY }); Body.setVelocity(b, { x: 0, y: b.velocity.y }); }
+            });
         });
 
         function createDwarf(x, y) {
