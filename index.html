@@ -1,11 +1,9 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-    <link rel="manifest" href="manifest.json">
-    <meta name="theme-color" content="#ffffff">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>魔法のパステルキャンバス - 雪だるま粉砕と鬼の猛追</title>
+    <title>魔法のパステルキャンバス - 全画面フルサポート版</title>
     <style>
         body { margin: 0; padding: 0; overflow: hidden; background-color: #fdfbfb; touch-action: none; font-family: sans-serif; }
         canvas { display: block; }
@@ -27,6 +25,21 @@
 
         const engine = Engine.create();
         const world = engine.world;
+
+        // ★ フルスクリーン化と横向き固定の魔法
+        function tryFullscreen() {
+            if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+                let el = document.documentElement;
+                let req = el.requestFullscreen || el.webkitRequestFullscreen;
+                if (req) {
+                    req.call(el).then(() => {
+                        if (screen.orientation && screen.orientation.lock) {
+                            screen.orientation.lock('landscape').catch(e => console.log("Orientation lock not supported", e));
+                        }
+                    }).catch(e => console.log("Fullscreen failed", e));
+                }
+            }
+        }
 
         // --- サウンドシステム ---
         let audioCtx = null;
@@ -123,42 +136,22 @@
             }, 220); 
         }
 
-        const dwarfs = [];
-        const lines = [];
-        const drawnObjects = []; 
-        const bubbles = [];
-        const rains = [];
-        const clouds = [];
-        const particles = [];
-        const ripples = []; 
-        const fires = []; 
-        const trees = [];
-        const birds = [];
-        const seeds = [];    
-        const plants = []; 
-        const balloons = []; 
-        const caterpillars = []; 
-        const butterflies = []; 
-        const magicSkies = []; 
-        const puddles = []; 
-        const fallenStars = []; 
+        const dwarfs = []; const lines = []; const drawnObjects = []; const bubbles = [];
+        const rains = []; const clouds = []; const particles = []; const ripples = []; 
+        const fires = []; const trees = []; const birds = []; const seeds = [];    
+        const plants = []; const balloons = []; const caterpillars = []; const butterflies = []; 
+        const magicSkies = []; const puddles = []; const fallenStars = []; 
         
-        let onis = [];
-        const snowmen = [];
-        const snowflakes = [];
-        let isSnowing = false;
-        let snowTimer = 0;
+        let onis = []; const snowmen = []; const snowflakes = [];
+        let isSnowing = false; let snowTimer = 0;
 
-        let currentColor = '#ffffff'; 
-        let isNight = false; 
+        let currentColor = '#ffffff'; let isNight = false; 
         const stars = Array.from({length: 150}, () => ({x: Math.random()*2000, y: Math.random()*1500, r: Math.random()*1.5}));
 
         const pastelPink = '#ffb3ff'; const pastelRed = '#ffb3b3'; const pastelBlue = '#b3d9ff';
         const pastelYellow = '#ffffb3'; const pastelGreen = '#a8e6cf'; const pastelOrange = '#ffdfba'; 
-        const pastelBrown = '#d4a373'; 
-        const dwarfColors = [pastelRed, pastelBlue, pastelYellow, pastelGreen]; 
-        const dwarfTypes = [0, 1, 2]; 
-        const softCharcoal = '#6b7a8f';
+        const pastelBrown = '#d4a373'; const dwarfColors = [pastelRed, pastelBlue, pastelYellow, pastelGreen]; 
+        const dwarfTypes = [0, 1, 2]; const softCharcoal = '#6b7a8f';
 
         const patternCache = {};
         function getPattern(color) {
@@ -185,7 +178,21 @@
             Composite.add(world, [leftWall, rightWall]);
         }
         createBoundaries();
-        window.addEventListener('resize', () => { width = window.innerWidth; height = window.innerHeight; canvas.width = width; canvas.height = height; createBoundaries(); });
+
+        window.addEventListener('resize', () => { 
+            width = window.innerWidth; height = window.innerHeight; 
+            canvas.width = width; canvas.height = height; 
+            createBoundaries(); 
+            
+            // ★ リサイズ時の画面外救済システム
+            world.bodies.forEach(b => {
+                if (b.isStatic || b.label === 'line') return; 
+                let changed = false; let newX = b.position.x; let newY = b.position.y;
+                if (newX > width - 20) { newX = width - 50; changed = true; }
+                else if (newX < 20) { newX = 50; changed = true; }
+                if (changed) { Body.setPosition(b, { x: newX, y: newY }); Body.setVelocity(b, { x: 0, y: b.velocity.y }); }
+            });
+        });
 
         function createDwarf(x, y) {
             const scaleFactor = 1.0 + Math.random() * 1.0;
@@ -200,7 +207,6 @@
             Composite.add(world, body); dwarfs.push(dwarf);
         }
 
-        // ★ 鬼の生成：3〜5人ぶっ飛ばすまで帰らない
         function createOni() {
             let isLeft = Math.random() < 0.5;
             let x = isLeft ? 60 : width - 60;
@@ -212,7 +218,7 @@
                 body, time: 0, lifeTime: 0, state: 'huntingStar', scale: scale,
                 color: dwarfColors[Math.floor(Math.random() * dwarfColors.length)], 
                 dir: isLeft ? 1 : -1, targetStar: null, targetDwarf: null,
-                throwCount: 0, maxThrow: 3 + Math.floor(Math.random() * 3) // ★ ノルマ設定
+                throwCount: 0, maxThrow: 3 + Math.floor(Math.random() * 3) 
             });
         }
 
@@ -225,7 +231,6 @@
         setInterval(() => {
             if (Math.random() < 0.3) {
                 const drop = Bodies.circle(Math.random() * width, -10, 3, { restitution: 0.1, friction: 0.01 });
-                // ★ 通常の雨も isStar を false に固定して青い水滴にする
                 Composite.add(world, drop); rains.push({ body: drop, life: 300, isStar: false });
             }
         }, 500);
@@ -337,7 +342,6 @@
             });
         });
 
-        // ★ 通常の飛び散りエフェクト
         function createSplatterParticles(x, y, color) {
             for(let p=0; p<12; p++) {
                 const isMain = p === 0; const spikes = []; const spikeCount = isMain ? 8 : (4 + Math.floor(Math.random()*3));
@@ -345,19 +349,13 @@
                 particles.push({ x: x + (isMain ? 0 : (Math.random()-0.5)*40), y: y + (isMain ? 0 : (Math.random()-0.5)*40), vx: isMain ? 0 : (Math.random()-0.5)*8, vy: isMain ? 0 : (Math.random()-0.5)*8 - 2, life: 200 + Math.random()*50, color: color, baseRadius: isMain ? 15 : (4 + Math.random()*6), spikes: spikes });
             }
         }
-
-        // ★ 雪だるま粉砕専用エフェクト（丸い雪の塊）
         function createSnowShards(x, y) {
             for(let i=0; i<15; i++) {
                 particles.push({
-                    x: x + (Math.random()-0.5)*40,
-                    y: y + (Math.random()-0.5)*50,
-                    vx: (Math.random()-0.5)*12,
-                    vy: (Math.random()-0.5)*12 - 5,
-                    life: 100 + Math.random()*50,
-                    color: '#cce6ff', // 少し水色がかった雪の色
-                    baseRadius: 3 + Math.random()*6,
-                    spikes: [] 
+                    x: x + (Math.random()-0.5)*40, y: y + (Math.random()-0.5)*50,
+                    vx: (Math.random()-0.5)*12, vy: (Math.random()-0.5)*12 - 5,
+                    life: 100 + Math.random()*50, color: '#cce6ff', 
+                    baseRadius: 3 + Math.random()*6, spikes: [] 
                 });
             }
         }
@@ -483,8 +481,6 @@
 
                 if (Math.abs(o.body.velocity.x) < 3.0) Body.applyForce(o.body, o.body.position, { x: o.dir * 0.002 * forceMult, y: 0 });
                 if (isGrounded && Math.random() < 0.05) Body.setVelocity(o.body, {x: o.body.velocity.x, y: -4});
-
-                // ★ 鬼は雨を気にせず追いかけるよう変更！
             });
 
             let hasThreat = clouds.some(c => c.isRaining || c.isStriking) || onis.length > 0;
@@ -519,7 +515,6 @@
                 if (d.charredTimer > 0) { d.charredTimer--; if(d.charredTimer <= 0) d.isCharred = false; }
                 if (d.fleeTimer > 0) d.fleeTimer--;
 
-                // ★ 雪だるま作り（確率をさらに低く）
                 if (isSnowing && !hasThreat && isGrounded && Math.random() < 0.0005 && !d.snowmanTimer && !d.isCharred && !d.ownsSnowman) { d.snowmanTimer = 100; }
                 if (d.snowmanTimer > 0) {
                     d.snowmanTimer--;
@@ -655,7 +650,6 @@
                         c.scale = 1.0 + Math.sin((600 - c.rainTimer) * 0.1) * 0.2;
                         if (Math.random() < 0.4) {
                             const drop = Bodies.circle(c.x + (Math.random() - 0.5) * (c.radius * 2.5), c.y + 10, 3, { restitution: 0.1, friction: 0.01 });
-                            // ★ 雲から降る雨も青いしずくにする
                             Composite.add(world, drop); rains.push({ body: drop, life: 250, isStar: false });
                         }
                     } else { c.x += c.vx; }
@@ -707,8 +701,7 @@
             for (let i = trees.length - 1; i >= 0; i--) {
                 const t = trees[i]; t.time++;
                 if (!t.body.isStatic && (Query.collides(t.body, groundBodies).length > 0 || Query.collides(t.body, lines.map(l => l.body)).length > 0)) {
-                    Body.setStatic(t.body, true);
-                    t.body.isSensor = true; 
+                    Body.setStatic(t.body, true); t.body.isSensor = true; 
                 }
                 fires.forEach(f => { if (Vector.magnitude(Vector.sub(t.body.position, f.body.position)) < 45 * t.scale) t.isBurning = true; });
                 
@@ -881,6 +874,8 @@
         let touchCurrentPos = null;
 
         function handleStart(x, y) {
+            tryFullscreen(); // ★ タップでフルスクリーン化を試行
+
             if(!audioCtx) { const AC = window.AudioContext || window.webkitAudioContext; if(AC) audioCtx = new AC(); }
             if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
             startBGM();
@@ -888,7 +883,6 @@
             touchStartPos = { x, y }; touchCurrentPos = { x, y };
             let intercepted = false;
 
-            // ★ 雪だるまの派手な粉砕処理
             for (let i = 0; i < snowmen.length; i++) {
                 let sm = snowmen[i];
                 if (Math.hypot(sm.body.position.x - x, sm.body.position.y - y) < 40) {
@@ -1305,7 +1299,6 @@
                 ctx.restore();
             });
 
-            // ★ 雪だるまの描画
             snowmen.forEach(sm => {
                 ctx.save(); ctx.translate(sm.body.position.x, sm.body.position.y);
                 ctx.scale(2.0, 2.0); 
@@ -1323,7 +1316,6 @@
                 ctx.restore();
             });
 
-            // ★ 鬼の描画
             onis.forEach(o => {
                 ctx.save(); ctx.translate(o.body.position.x, o.body.position.y);
                 let tilt = o.body.velocity.x * 0.05; ctx.rotate(tilt);
@@ -1440,7 +1432,6 @@
                 ctx.restore();
             });
             
-            // ★ 雨粒の描画（線を太く・長くしてはっきり見えるように）
             ctx.strokeStyle = '#80bfff'; ctx.lineWidth = 3; ctx.lineCap = 'round';
             rains.forEach(r => {
                 const bp = r.body.position; const vel = r.body.velocity;
@@ -1472,11 +1463,6 @@
 
         render();
         const runner = Runner.create(); Runner.run(runner, engine);
-    </script>
-    <script>
-        if ('serviceWorker' in navigator) {
-          navigator.serviceWorker.register('./service-worker.js');
-        }
     </script>
 </body>
 </html>
