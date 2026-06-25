@@ -3,15 +3,43 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>魔法のパステルキャンバス - 全画面フルサポート版</title>
+    <title>魔法のパステルキャンバス - 完全版</title>
     <style>
-        body { margin: 0; padding: 0; overflow: hidden; background-color: #fdfbfb; touch-action: none; font-family: sans-serif; }
+        body { margin: 0; padding: 0; overflow: hidden; background-color: #fdfbfb; touch-action: none; font-family: sans-serif; user-select: none; -webkit-user-select: none; }
         canvas { display: block; }
+
+        /* ★ 3歳児にもわかりやすい「スタート画面」 */
+        #start-screen {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(135deg, #ffd9e6, #e6e6ff);
+            z-index: 10000;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            cursor: pointer;
+        }
+        #start-screen h1 {
+            font-size: 8vw; color: #ff80ab; margin: 0 0 20px 0; text-shadow: 2px 2px 0px #fff; text-align: center;
+        }
+        #start-screen .start-btn {
+            font-size: 6vw; font-weight: bold; color: #ff80ab; background: #fff;
+            padding: 20px 40px; border-radius: 50px;
+            box-shadow: 0 8px 15px rgba(255, 128, 171, 0.3);
+            animation: bounce 1.5s infinite;
+        }
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-15px); }
+        }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/poly-decomp@0.3.0/build/decomp.min.js"></script>
 </head>
 <body>
+    <!-- ★ スタート画面 -->
+    <div id="start-screen">
+        <h1>まほうのパステルキャンバス</h1>
+        <div class="start-btn">タッチしてあそぶ！</div>
+    </div>
+
     <canvas id="world"></canvas>
 
     <script>
@@ -26,18 +54,16 @@
         const engine = Engine.create();
         const world = engine.world;
 
-        // ★ フルスクリーン化と横向き固定の魔法
-        function tryFullscreen() {
-            if (!document.fullscreenElement && !document.webkitFullscreenElement) {
-                let el = document.documentElement;
-                let req = el.requestFullscreen || el.webkitRequestFullscreen;
-                if (req) {
-                    req.call(el).then(() => {
-                        if (screen.orientation && screen.orientation.lock) {
-                            screen.orientation.lock('landscape').catch(e => console.log("Orientation lock not supported", e));
-                        }
-                    }).catch(e => console.log("Fullscreen failed", e));
-                }
+        // --- フルスクリーンと横向き固定 ---
+        function tryFullscreenAndLock() {
+            let el = document.documentElement;
+            let req = el.requestFullscreen || el.webkitRequestFullscreen;
+            if (req) {
+                req.call(el).then(() => {
+                    if (screen.orientation && screen.orientation.lock) {
+                        screen.orientation.lock('landscape').catch(e => console.log("Orientation lock failed:", e));
+                    }
+                }).catch(e => console.log("Fullscreen failed:", e));
             }
         }
 
@@ -136,6 +162,23 @@
             }, 220); 
         }
 
+        // --- スタート画面の処理 ---
+        document.getElementById('start-screen').addEventListener('click', function() {
+            tryFullscreenAndLock();
+            if(!audioCtx) { const AC = window.AudioContext || window.webkitAudioContext; if(AC) audioCtx = new AC(); }
+            if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+            startBGM();
+            this.style.display = 'none'; // スタート画面を消す
+        });
+        document.getElementById('start-screen').addEventListener('touchstart', function(e) {
+            e.preventDefault();
+            tryFullscreenAndLock();
+            if(!audioCtx) { const AC = window.AudioContext || window.webkitAudioContext; if(AC) audioCtx = new AC(); }
+            if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+            startBGM();
+            this.style.display = 'none';
+        }, {passive: false});
+
         const dwarfs = []; const lines = []; const drawnObjects = []; const bubbles = [];
         const rains = []; const clouds = []; const particles = []; const ripples = []; 
         const fires = []; const trees = []; const birds = []; const seeds = [];    
@@ -183,15 +226,6 @@
             width = window.innerWidth; height = window.innerHeight; 
             canvas.width = width; canvas.height = height; 
             createBoundaries(); 
-            
-            // ★ リサイズ時の画面外救済システム
-            world.bodies.forEach(b => {
-                if (b.isStatic || b.label === 'line') return; 
-                let changed = false; let newX = b.position.x; let newY = b.position.y;
-                if (newX > width - 20) { newX = width - 50; changed = true; }
-                else if (newX < 20) { newX = 50; changed = true; }
-                if (changed) { Body.setPosition(b, { x: newX, y: newY }); Body.setVelocity(b, { x: 0, y: b.velocity.y }); }
-            });
         });
 
         function createDwarf(x, y) {
@@ -415,6 +449,20 @@
 
         // --- 毎フレームのアップデート処理 ---
         Events.on(engine, 'beforeUpdate', () => {
+
+            // ★ 画面外に落ちたキャラクターの強力な救済装置
+            dwarfs.forEach(d => {
+                if (d.body.position.y > height + 100) {
+                    Body.setPosition(d.body, { x: width / 2, y: 50 });
+                    Body.setVelocity(d.body, { x: 0, y: 0 });
+                }
+            });
+            onis.forEach((o, i) => {
+                if (o.body.position.y > height + 100) {
+                    Composite.remove(world, o.body); onis.splice(i, 1);
+                }
+            });
+
             fallenStars.forEach(s => s.followersCount = 0);
 
             if (isSnowing) {
@@ -440,7 +488,7 @@
                 if (o.state === 'fleeing' || o.state === 'returning') {
                     Body.applyForce(o.body, o.body.position, { x: o.dir * 0.005 * forceMult, y: 0 });
                     if (isGrounded && Math.random() < 0.1) Body.setVelocity(o.body, {x: o.body.velocity.x, y: -5});
-                    if (o.body.position.x < 40 || o.body.position.x > width - 40) { Composite.remove(world, o.body); onis.splice(i, 1); }
+                    if (o.body.position.x < -100 || o.body.position.x > width + 100) { Composite.remove(world, o.body); onis.splice(i, 1); }
                     return;
                 }
 
@@ -457,7 +505,9 @@
                 } else {
                     o.state = 'huntingDwarf'; let nearestDwarf = null; let minDwarfDist = Infinity;
                     dwarfs.forEach(d => {
-                        if (!d.isCharred && !d.inHouse && !d.isGrabbed) { let dist = Math.abs(d.body.position.x - o.body.position.x); if (dist < minDwarfDist) { minDwarfDist = dist; nearestDwarf = d; } }
+                        if (!d.isCharred && !d.inHouse && !d.isGrabbed && d.body.position.y < height) { 
+                            let dist = Math.abs(d.body.position.x - o.body.position.x); if (dist < minDwarfDist) { minDwarfDist = dist; nearestDwarf = d; } 
+                        }
                     });
                     if (nearestDwarf) {
                         o.dir = nearestDwarf.body.position.x > o.body.position.x ? 1 : -1;
@@ -874,12 +924,6 @@
         let touchCurrentPos = null;
 
         function handleStart(x, y) {
-            tryFullscreen(); // ★ タップでフルスクリーン化を試行
-
-            if(!audioCtx) { const AC = window.AudioContext || window.webkitAudioContext; if(AC) audioCtx = new AC(); }
-            if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
-            startBGM();
-
             touchStartPos = { x, y }; touchCurrentPos = { x, y };
             let intercepted = false;
 
@@ -1018,9 +1062,12 @@
             isDrawing = false; currentPath = []; touchStartPos = null; touchCurrentPos = null;
         }
 
-        window.addEventListener('mousedown', e => handleStart(e.clientX, e.clientY)); window.addEventListener('mousemove', e => handleMove(e.clientX, e.clientY));
-        window.addEventListener('mouseup', handleEnd); window.addEventListener('touchstart', e => handleStart(e.touches[0].clientX, e.touches[0].clientY), {passive:false});
-        window.addEventListener('touchmove', e => { e.preventDefault(); handleMove(e.touches[0].clientX, e.touches[0].clientY); }, {passive:false}); window.addEventListener('touchend', handleEnd);
+        window.addEventListener('mousedown', e => { if(document.getElementById('start-screen').style.display==='none') handleStart(e.clientX, e.clientY); });
+        window.addEventListener('mousemove', e => { if(document.getElementById('start-screen').style.display==='none') handleMove(e.clientX, e.clientY); });
+        window.addEventListener('mouseup', handleEnd);
+        window.addEventListener('touchstart', e => { if(document.getElementById('start-screen').style.display==='none') handleStart(e.touches[0].clientX, e.touches[0].clientY); }, {passive:false});
+        window.addEventListener('touchmove', e => { e.preventDefault(); if(document.getElementById('start-screen').style.display==='none') handleMove(e.touches[0].clientX, e.touches[0].clientY); }, {passive:false});
+        window.addEventListener('touchend', handleEnd);
 
         // --- 描画エンジン ---
         function render() {
