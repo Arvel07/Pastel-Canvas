@@ -1,20 +1,18 @@
 {
   "name": "魔法のパステルキャンバス",
   "short_name": "パステル",
-  "description": "お絵描きや遊びができる子ども向けアプリ",
-  "start_url": "/Pastel-Canvas/",
-  "scope": "/Pastel-Canvas/",
+  "start_url": "./",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#ffffff",
+  "background_color": "#fdfbfb",
+  "theme_color": "#ff80ab",
   "icons": [
     {
-      "src": "icon-192.png",
+      "src": "icon.png",
       "sizes": "192x192",
       "type": "image/png"
     },
     {
-      "src": "icon-512.png",
+      "src": "icon.png",
       "sizes": "512x512",
       "type": "image/png"
     }
