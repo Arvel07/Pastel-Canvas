@@ -3,7 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>魔法のパステルキャンバス - スマホ完全対応版</title>
+    <title>魔法のパステルキャンバス - 軽量最適化版</title>
+    <link rel="icon" type="image/png" href="icon.png">
+    <link rel="apple-touch-icon" href="icon.png">
+    <link rel="manifest" href="manifest.json">
     <style>
         body { margin: 0; padding: 0; overflow: hidden; background-color: #fdfbfb; touch-action: none; font-family: sans-serif; user-select: none; -webkit-user-select: none; }
         canvas { display: block; }
@@ -29,44 +32,11 @@
             0%, 100% { transform: translateY(0); }
             50% { transform: translateY(-15px); }
         }
-
-        /* ★ 万が一縦持ちになった時の「横にしてね」アニメーション画面 */
-        #rotate-screen {
-            display: none;
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(253, 251, 251, 0.95); z-index: 9999;
-            flex-direction: column; justify-content: center; align-items: center;
-        }
-        /* スタート後に縦画面だったら表示する */
-        @media screen and (orientation: portrait) {
-            body.started #rotate-screen { display: flex; }
-        }
-        .phone-icon {
-            width: 80px; height: 140px;
-            border: 8px solid #ff80ab; border-radius: 15px;
-            position: relative;
-            animation: rotatePhone 2s infinite ease-in-out;
-        }
-        .phone-icon::after {
-            content: ''; position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
-            width: 20px; height: 20px; background: #ff80ab; border-radius: 50%;
-        }
-        @keyframes rotatePhone {
-            0% { transform: rotate(0deg); }
-            50% { transform: rotate(-90deg); }
-            100% { transform: rotate(-90deg); }
-        }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/poly-decomp@0.3.0/build/decomp.min.js"></script>
 </head>
 <body>
-    <!-- ★ 縦持ち時に表示される画面 -->
-    <div id="rotate-screen">
-        <div class="phone-icon"></div>
-    </div>
-
-    <!-- ★ スタート画面 -->
     <div id="start-screen">
         <h1>まほうのパステルキャンバス</h1>
         <div class="start-btn">タッチしてあそぶ！</div>
@@ -86,7 +56,11 @@
         const engine = Engine.create();
         const world = engine.world;
 
-        // ★ フルスクリーン化と横向き固定の魔法（Android対策で調整）
+        // ★軽量化: 平方根(Math.hypot等)を使わずに距離の2乗で比較する爆速関数
+        function distSq(p1, p2) {
+            return (p1.x - p2.x)**2 + (p1.y - p2.y)**2;
+        }
+
         function tryFullscreenAndLock() {
             let el = document.documentElement;
             let req = el.requestFullscreen || el.webkitRequestFullscreen;
@@ -160,55 +134,134 @@
                 osc.connect(gain); gain.connect(audioCtx.destination);
                 osc.start(); gain.gain.setValueAtTime(0.3, audioCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 1.0);
                 osc.stop(audioCtx.currentTime + 1.0);
+            },
+            sparkle: () => {
+                if(!audioCtx) return;
+                const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
+                osc.frequency.setValueAtTime(1200 + Math.random()*800, audioCtx.currentTime);
+                osc.type = 'sine';
+                osc.connect(gain); gain.connect(audioCtx.destination);
+                osc.start(); gain.gain.setValueAtTime(0.05, audioCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+                osc.stop(audioCtx.currentTime + 0.1);
             }
         };
 
-        function startBGM() {
+	function startBGM() {
             if (bgmStarted) return;
             bgmStarted = true;
+
+            // ① マリンバ風（主旋律：メロディ）
             function playMarimba(freq, vol=0.3, dur=0.3) {
                 if (!audioCtx || audioCtx.state !== 'running') return;
                 let now = audioCtx.currentTime;
                 let o = audioCtx.createOscillator(); let g = audioCtx.createGain();
                 o.type = 'sine'; o.frequency.value = freq;
-                g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(vol, now + 0.015); g.gain.exponentialRampToValueAtTime(0.001, now + dur);
+                g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(vol, now + 0.01); g.gain.exponentialRampToValueAtTime(0.001, now + dur);
                 let o2 = audioCtx.createOscillator(); let g2 = audioCtx.createGain();
                 o2.type = 'triangle'; o2.frequency.value = freq * 3.01;
                 g2.gain.setValueAtTime(0, now); g2.gain.linearRampToValueAtTime(vol * 0.15, now + 0.01); g2.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
                 o.connect(g); g.connect(audioCtx.destination); o2.connect(g2); g2.connect(audioCtx.destination);
                 o.start(now); o.stop(now + dur); o2.start(now); o2.stop(now + dur);
             }
-            const pentatonic = [261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33, 659.25, 783.99, 880.00]; 
-            const bassPentatonic = [130.81, 146.83, 164.81, 196.00, 220.00];
-            let beat = 0;
+
+            // ② ベル風（魔法のキラキラ感）
+            function playBell(freq, vol=0.1, dur=1.0) {
+                if (!audioCtx || audioCtx.state !== 'running') return;
+                let now = audioCtx.currentTime;
+                let o = audioCtx.createOscillator(); let g = audioCtx.createGain();
+                o.type = 'sine'; o.frequency.value = freq;
+                g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(vol, now + 0.01); g.gain.exponentialRampToValueAtTime(0.001, now + dur);
+                o.connect(g); g.connect(audioCtx.destination);
+                o.start(now); o.stop(now + dur);
+            }
+
+            // ③ ベース風（小人や鬼がトコトコ歩くようなぽこぽこ音）
+            function playBass(freq, vol=0.3, dur=0.4) {
+                if (!audioCtx || audioCtx.state !== 'running') return;
+                let now = audioCtx.currentTime;
+                let o = audioCtx.createOscillator(); let g = audioCtx.createGain();
+                o.type = 'triangle'; o.frequency.value = freq;
+                g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(vol, now + 0.02); g.gain.exponentialRampToValueAtTime(0.001, now + dur);
+                o.connect(g); g.connect(audioCtx.destination);
+                o.start(now); o.stop(now + dur);
+            }
+
+            // 音階の周波数定義（Cメジャースケール）
+            const C2=65.41, F2=87.31, G2=98.00;
+            const C3=130.81, D3=146.83, E3=164.81, F3=174.61, G3=196.00, A3=220.00, B3=246.94;
+            const C4=261.63, D4=293.66, E4=329.63, F4=349.23, G4=392.00, A4=440.00, B4=493.88;
+            const C5=523.25, D5=587.33, E5=659.25, A5=880.00, G5=783.99, C6=1046.50;
+
+            // ★ 陽気な童謡風メロディ（64ステップのループ）
+            const melody = [
+                E4, null, G4, null, A4, null, G4, null,  // ミー ソー ラー ソー
+                E4, null, C4, null, D4, null, null, null, // ミー ドー レーーー
+                E4, null, G4, null, A4, null, C5, null,  // ミー ソー ラー ド(高)
+                A4, null, G4, null, A4, null, null, null, // ラー ソー ラーーー
+                E4, null, G4, null, A4, null, G4, null,  // ミー ソー ラー ソー
+                E4, null, C4, null, D4, null, null, null, // ミー ドー レーーー
+                C4, null, D4, null, E4, null, G4, null,  // ドー レー ミー ソー
+                C4, null, null, null, null, null, null, null  // ドーーーーーーー
+            ];
+            
+            // ★ トコトコ歩くようなベースライン
+            const bass = [
+                C3, null, G2, null, C3, null, G2, null,
+                C3, null, G2, null, C3, null, G2, null,
+                F2, null, C3, null, F2, null, C3, null,
+                F2, null, C3, null, F2, null, C3, null,
+                C3, null, G2, null, C3, null, G2, null,
+                C3, null, G2, null, C3, null, G2, null,
+                G2, null, D3, null, G2, null, D3, null,
+                C3, null, G2, null, C3, null, null, null
+            ];
+            
+            const bellNotes = [C5, E5, G5, A5, C6];
+
+            let step = 0;
             setInterval(() => {
                 if (!audioCtx || audioCtx.state !== 'running') return;
-                if (Math.random() < 0.6) playMarimba(pentatonic[Math.floor(Math.random() * pentatonic.length)], 0.2, 0.3);
-                if (beat % 2 !== 0 && Math.random() < 0.4) setTimeout(() => { if(audioCtx.state === 'running') playMarimba(pentatonic[Math.floor(Math.random() * pentatonic.length)], 0.1, 0.15); }, 100);
-                if (beat % 4 === 0) playMarimba(bassPentatonic[Math.floor(Math.random() * bassPentatonic.length)], 0.3, 0.5); 
-                if (beat % 8 === 0 && Math.random() < 0.6) {
-                    let rootIdx = Math.floor(Math.random() * 4);
-                    playMarimba(pentatonic[rootIdx], 0.15, 0.4); playMarimba(pentatonic[rootIdx + 2], 0.15, 0.4); playMarimba(pentatonic[rootIdx + 4], 0.15, 0.4);  
+                
+                // メロディの再生
+                let mNote = melody[step % melody.length];
+                if (mNote) playMarimba(mNote, 0.25, 0.4);
+                
+                // ベースの再生
+                let bNote = bass[step % bass.length];
+                if (bNote) playBass(bNote, 0.35, 0.4);
+
+                // 魔法のキラキラ感（時々ランダムな和音で鳴らす）
+                if (step % 8 === 0 && Math.random() < 0.6) {
+                    playBell(bellNotes[Math.floor(Math.random() * bellNotes.length)], 0.08, 1.5);
+                    playBell(bellNotes[Math.floor(Math.random() * bellNotes.length)], 0.08, 1.5);
                 }
-                beat++;
-            }, 220); 
+
+                step++;
+            }, 200); // テンポ（1ステップ200ミリ秒。子供がトコトコ歩く速さ）
         }
 
-        // ★ スタート画面がクリックされた時（Androidなどに対応するためclickイベントを使用）
         document.getElementById('start-screen').addEventListener('click', function() {
             tryFullscreenAndLock();
             if(!audioCtx) { const AC = window.AudioContext || window.webkitAudioContext; if(AC) audioCtx = new AC(); }
             if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
             startBGM();
-            this.style.display = 'none'; // スタート画面を消す
-            document.body.classList.add('started'); // 縦画面時のアニメーションを有効にする
+            this.style.display = 'none';
         });
+        document.getElementById('start-screen').addEventListener('touchstart', function(e) {
+            e.preventDefault();
+            tryFullscreenAndLock();
+            if(!audioCtx) { const AC = window.AudioContext || window.webkitAudioContext; if(AC) audioCtx = new AC(); }
+            if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+            startBGM();
+            this.style.display = 'none';
+        }, {passive: false});
 
         const dwarfs = []; const lines = []; const drawnObjects = []; const bubbles = [];
         const rains = []; const clouds = []; const particles = []; const ripples = []; 
         const fires = []; const trees = []; const birds = []; const seeds = [];    
         const plants = []; const balloons = []; const caterpillars = []; const butterflies = []; 
         const magicSkies = []; const puddles = []; const fallenStars = []; 
+        const notes = []; // ★軽量化: 音符管理配列
         
         let onis = []; const snowmen = []; const snowflakes = [];
         let isSnowing = false; let snowTimer = 0;
@@ -251,15 +304,6 @@
             width = window.innerWidth; height = window.innerHeight; 
             canvas.width = width; canvas.height = height; 
             createBoundaries(); 
-            
-            // ★ リサイズ時の画面外救済システム
-            world.bodies.forEach(b => {
-                if (b.isStatic || b.label === 'line') return; 
-                let changed = false; let newX = b.position.x; let newY = b.position.y;
-                if (newX > width - 20) { newX = width - 50; changed = true; }
-                else if (newX < 20) { newX = 50; changed = true; }
-                if (changed) { Body.setPosition(b, { x: newX, y: newY }); Body.setVelocity(b, { x: 0, y: b.velocity.y }); }
-            });
         });
 
         function createDwarf(x, y) {
@@ -369,14 +413,17 @@
             Composite.add(world, body); balloons.push({ body, color, time: 0, passenger: null });
         }
 
+        // ★軽量化: world.bodies の走査をやめ、管理配列を使用
         function createPuddle(x) {
-            let hitY = height - 40; let highestY = height;
-            world.bodies.forEach(b => {
-                if(b.label === 'ground' || b.label === 'line') {
-                    if (x > b.bounds.min.x && x < b.bounds.max.x) { if (b.bounds.min.y < highestY) highestY = b.bounds.min.y; }
-                }
+            let hitY = height - 40;
+            groundBodies.forEach(b => {
+                if (x > b.bounds.min.x && x < b.bounds.max.x && b.bounds.min.y < hitY) hitY = b.bounds.min.y;
             });
-            puddles.push({ x: x, y: highestY, width: 90, life: 900 }); 
+            lines.forEach(l => {
+                let b = l.body;
+                if (x > b.bounds.min.x && x < b.bounds.max.x && b.bounds.min.y < hitY) hitY = b.bounds.min.y;
+            });
+            puddles.push({ x: x, y: hitY, width: 90, life: 900 }); 
         }
 
         function createCaterpillar(x, y) {
@@ -389,7 +436,7 @@
         }
         function createNote(x, y) {
             const body = Bodies.circle(x, y, 15, { restitution: 0.9, friction: 0.1, label: 'note' });
-            body.bounceCount = 0; Composite.add(world, body);
+            body.bounceCount = 0; Composite.add(world, body); notes.push(body); // ★配列管理
         }
 
         Events.on(engine, 'collisionStart', (e) => {
@@ -398,22 +445,31 @@
                 if (a.label === 'note') { noteBody = a; otherBody = b; } else if (b.label === 'note') { noteBody = b; otherBody = a; }
                 if (noteBody && noteBody.bounceCount < 15) {
                     if (otherBody.label === 'line' || otherBody.label === 'ground' || otherBody.label === 'block' || otherBody.label === 'dwarf') {
-                        sounds.note(); ripples.push({x: noteBody.position.x, y: noteBody.position.y, r: 0, life: 30}); 
+                        sounds.note(); 
+                        ripples.push({x: noteBody.position.x, y: noteBody.position.y, r: 0, life: 30, color: '#ffffff', width: 2, isCircle: false}); 
                         Body.setVelocity(noteBody, {x: noteBody.velocity.x, y: -6});
                         noteBody.bounceCount++;
                         if (noteBody.bounceCount >= 15) {
                             createSplatterParticles(noteBody.position.x, noteBody.position.y, pastelYellow);
-                            Composite.remove(world, noteBody); noteBody.bounceCount = 99; 
                         }
                     }
                 }
             });
         });
 
+        // ★軽量化: 描画時の三角関数を排除するため、生成時に事前計算
         function createSplatterParticles(x, y, color) {
-            for(let p=0; p<12; p++) {
-                const isMain = p === 0; const spikes = []; const spikeCount = isMain ? 8 : (4 + Math.floor(Math.random()*3));
-                for(let s=0; s<spikeCount; s++) { spikes.push({ angle: (Math.PI * 2 / spikeCount) * s + (Math.random()*0.5), len: isMain ? (15 + Math.random() * 25) : (5 + Math.random() * 15) }); }
+            for(let p=0; p<10; p++) {
+                const isMain = p === 0; const spikes = []; const spikeCount = isMain ? 7 : (3 + Math.floor(Math.random()*2));
+                for(let s=0; s<spikeCount; s++) { 
+                    let angle = (Math.PI * 2 / spikeCount) * s + (Math.random()*0.5);
+                    spikes.push({
+                        c: Math.cos(angle), s: Math.sin(angle),
+                        c1: Math.cos(angle-1.5), s1: Math.sin(angle-1.5),
+                        c2: Math.cos(angle+1.5), s2: Math.sin(angle+1.5),
+                        len: isMain ? (15 + Math.random() * 20) : (5 + Math.random() * 10) 
+                    });
+                }
                 particles.push({ x: x + (isMain ? 0 : (Math.random()-0.5)*40), y: y + (isMain ? 0 : (Math.random()-0.5)*40), vx: isMain ? 0 : (Math.random()-0.5)*8, vy: isMain ? 0 : (Math.random()-0.5)*8 - 2, life: 200 + Math.random()*50, color: color, baseRadius: isMain ? 15 : (4 + Math.random()*6), spikes: spikes });
             }
         }
@@ -484,7 +540,6 @@
         // --- 毎フレームのアップデート処理 ---
         Events.on(engine, 'beforeUpdate', () => {
 
-            // ★ 画面外に落ちたキャラクターの強力な救済装置
             dwarfs.forEach(d => {
                 if (d.body.position.y > height + 100) {
                     Body.setPosition(d.body, { x: width / 2, y: 50 });
@@ -526,33 +581,36 @@
                     return;
                 }
 
-                let nearestStar = null; let minStarDist = Infinity;
-                fallenStars.forEach(s => { let dist = Math.abs(s.body.position.x - o.body.position.x); if (dist < minStarDist) { minStarDist = dist; nearestStar = s; } });
+                let nearestStar = null; let minStarDistSq = Infinity;
+                fallenStars.forEach(s => { 
+                    // ★軽量化: distSqに変更
+                    let dSq = distSq(s.body.position, o.body.position); 
+                    if (dSq < minStarDistSq) { minStarDistSq = dSq; nearestStar = s; } 
+                });
 
                 if (nearestStar) {
                     o.state = 'huntingStar'; o.targetStar = nearestStar; o.dir = nearestStar.body.position.x > o.body.position.x ? 1 : -1;
-                    if (Vector.magnitude(Vector.sub(o.body.position, nearestStar.body.position)) < 30 * o.scale) {
+                    if (minStarDistSq < (30 * o.scale)**2) {
                         createSplatterParticles(nearestStar.body.position.x, nearestStar.body.position.y, pastelYellow); sounds.pop();
                         let idx = fallenStars.indexOf(nearestStar); if(idx > -1) { Composite.remove(world, nearestStar.body); fallenStars.splice(idx, 1); }
                         o.state = 'returning'; o.dir = o.body.position.x > width/2 ? 1 : -1; Body.setVelocity(o.body, {x: o.body.velocity.x, y: -4});
                     }
                 } else {
-                    o.state = 'huntingDwarf'; let nearestDwarf = null; let minDwarfDist = Infinity;
+                    o.state = 'huntingDwarf'; let nearestDwarf = null; let minDwarfDistSq = Infinity;
                     dwarfs.forEach(d => {
                         if (!d.isCharred && !d.inHouse && !d.isGrabbed && d.body.position.y < height) { 
-                            let dist = Math.abs(d.body.position.x - o.body.position.x); if (dist < minDwarfDist) { minDwarfDist = dist; nearestDwarf = d; } 
+                            let dSq = distSq(d.body.position, o.body.position); 
+                            if (dSq < minDwarfDistSq) { minDwarfDistSq = dSq; nearestDwarf = d; } 
                         }
                     });
                     if (nearestDwarf) {
                         o.dir = nearestDwarf.body.position.x > o.body.position.x ? 1 : -1;
-                        if (Vector.magnitude(Vector.sub(o.body.position, nearestDwarf.body.position)) < 40 * o.scale) {
+                        if (minDwarfDistSq < (40 * o.scale)**2) {
                             nearestDwarf.isCharred = true; nearestDwarf.charredTimer = 9999; sounds.boing();
-                            
                             Body.setPosition(nearestDwarf.body, { x: nearestDwarf.body.position.x, y: nearestDwarf.body.position.y - 20 });
                             let throwX = (o.dir) * (15 + Math.random() * 5); 
                             let throwY = -(15 + Math.random() * 5);
                             Body.setVelocity(nearestDwarf.body, {x: throwX, y: throwY});
-                            
                             o.throwCount++;
                             if (o.throwCount >= o.maxThrow) {
                                 o.state = 'returning'; o.dir = o.body.position.x > width/2 ? 1 : -1;
@@ -615,15 +673,15 @@
                 }
 
                 if (hasThreat && !d.isCharred && d.ignoreThreatTimer <= 0) {
-                    let nearestHouse = null; let minHouseDist = Infinity;
+                    let nearestHouse = null; let minHouseDistSq = Infinity;
                     trees.forEach(t => {
                         if (t.isHouse && !t.isBurning) {
-                            let dist = Math.abs(t.body.position.x - body.position.x);
-                            if (dist < minHouseDist) { minHouseDist = dist; nearestHouse = t; }
+                            let dSq = distSq(t.body.position, body.position);
+                            if (dSq < minHouseDistSq) { minHouseDistSq = dSq; nearestHouse = t; }
                         }
                     });
                     if (nearestHouse) {
-                        if (minHouseDist < 30 * nearestHouse.scale) {
+                        if (minHouseDistSq < (30 * nearestHouse.scale)**2) {
                             d.inHouse = true; d.houseRef = nearestHouse; nearestHouse.occupants.push(d);
                             Body.setStatic(d.body, true); Body.setPosition(d.body, {x: nearestHouse.body.position.x, y: nearestHouse.body.position.y});
                         } else {
@@ -637,7 +695,7 @@
 
                 let isFleeing = false;
                 fires.forEach(f => {
-                    if (Vector.magnitude(Vector.sub(body.position, f.body.position)) < 90) {
+                    if (distSq(body.position, f.body.position) < 8100) { // 90^2
                         isFleeing = true;
                         if (d.fleeTimer <= 0) { d.direction = body.position.x < f.body.position.x ? -1 : 1; Body.setVelocity(body, { x: d.direction * 5, y: -7.5 }); d.fleeTimer = 60; }
                     }
@@ -658,11 +716,11 @@
                         const dx = targetBalloon.body.position.x - body.position.x; d.direction = dx > 0 ? 1 : -1;
                         Body.setVelocity(body, { x: dx * 0.08, y: -8 });
                     } else {
-                        let targetStar = null; let minStarDist = 250;
+                        let targetStar = null; let minStarDistSq = 62500; // 250^2
                         fallenStars.forEach(s => {
-                            let dist = Math.hypot(body.position.x - s.body.position.x, body.position.y - s.body.position.y);
+                            let dSq = distSq(body.position, s.body.position);
                             if (s.followersCount >= 3 && d.lastTargetStar !== s.body) return; 
-                            if (dist < minStarDist) { minStarDist = dist; targetStar = s.body; }
+                            if (dSq < minStarDistSq) { minStarDistSq = dSq; targetStar = s.body; }
                         });
                         
                         if (targetStar) {
@@ -671,24 +729,25 @@
                             d.lastTargetStar = targetStar;
                             d.direction = targetStar.position.x > body.position.x ? 1 : -1;
                             
-                            if (minStarDist < 45) {
+                            if (minStarDistSq < 2025) { // 45^2
                                 Body.setVelocity(body, { x: body.velocity.x * 0.8, y: body.velocity.y });
                                 if (isGrounded && Math.random() < 0.05) { Body.setVelocity(body, { x: body.velocity.x, y: -4 - Math.random()*2 }); sounds.boing(); }
                             } else {
                                 if (Math.abs(body.velocity.x) < 2.5) { Body.applyForce(body, body.position, { x: d.direction * forceMultiplier * 1.5, y: 0 }); }
                             }
                         } else {
-                            d.lastTargetStar = null; let targetNote = null; let minNoteDist = 150;
-                            world.bodies.forEach(b => {
-                                if (b.label === 'note') {
-                                    let dist = Vector.magnitude(Vector.sub(body.position, b.position));
-                                    if (dist < minNoteDist) { minNoteDist = dist; targetNote = b; }
-                                }
+                            d.lastTargetStar = null; let targetNote = null; let minNoteDistSq = 22500; // 150^2
+                            notes.forEach(b => {
+                                let dSq = distSq(body.position, b.position);
+                                if (dSq < minNoteDistSq) { minNoteDistSq = dSq; targetNote = b; }
                             });
 
                             let nearPlant = false;
                             plants.forEach(pl => {
-                                if (Vector.magnitude(Vector.sub(body.position, pl.body.position)) < 80) { nearPlant = true; if (Math.random() < 0.03 && !targetNote) d.direction = body.position.x < pl.body.position.x ? 1 : -1; }
+                                if (distSq(body.position, pl.body.position) < 6400) { // 80^2
+                                    nearPlant = true; 
+                                    if (Math.random() < 0.03 && !targetNote) d.direction = body.position.x < pl.body.position.x ? 1 : -1; 
+                                }
                                 if (pl.type === 'mushroom' && !pl.isBurning) {
                                     const dx = body.position.x - pl.body.position.x; const dy = body.position.y - pl.body.position.y;
                                     if (Math.abs(dx) < 20 && dy > -30 && dy < 0 && body.velocity.y > 0) { 
@@ -744,9 +803,10 @@
             for (let i = rains.length - 1; i >= 0; i--) {
                 const drop = rains[i]; drop.life--;
                 if (drop.isStar) {
-                    dwarfs.forEach(d => { if(d.isCharred && !d.inHouse && Vector.magnitude(Vector.sub(drop.body.position, d.body.position)) < 30) { d.isCharred = false; d.charredTimer = 0; } });
-                    plants.forEach(p => { if(p.isBurning && Vector.magnitude(Vector.sub(drop.body.position, p.body.position)) < 30) { p.isBurning = false; p.burnTimer = 300; } });
-                    trees.forEach(t => { if(t.isBurning && Vector.magnitude(Vector.sub(drop.body.position, t.body.position)) < 30 * t.scale) { t.isBurning = false; t.burnTimer = 300; } });
+                    // ★軽量化: distSq に変更
+                    dwarfs.forEach(d => { if(d.isCharred && !d.inHouse && distSq(drop.body.position, d.body.position) < 900) { d.isCharred = false; d.charredTimer = 0; } });
+                    plants.forEach(p => { if(p.isBurning && distSq(drop.body.position, p.body.position) < 900) { p.isBurning = false; p.burnTimer = 300; } });
+                    trees.forEach(t => { if(t.isBurning && distSq(drop.body.position, t.body.position) < (30 * t.scale)**2) { t.isBurning = false; t.burnTimer = 300; } });
                 }
                 if (Query.collides(drop.body, groundBodies).length > 0 || drop.life <= 0 || drop.body.position.y > height + 20) {
                     Composite.remove(world, drop.body); rains.splice(i, 1);
@@ -787,7 +847,7 @@
                 if (!t.body.isStatic && (Query.collides(t.body, groundBodies).length > 0 || Query.collides(t.body, lines.map(l => l.body)).length > 0)) {
                     Body.setStatic(t.body, true); t.body.isSensor = true; 
                 }
-                fires.forEach(f => { if (Vector.magnitude(Vector.sub(t.body.position, f.body.position)) < 45 * t.scale) t.isBurning = true; });
+                fires.forEach(f => { if (distSq(t.body.position, f.body.position) < (45 * t.scale)**2) t.isBurning = true; });
                 
                 if (t.isBurning) {
                     if (t.occupants.length > 0) {
@@ -804,7 +864,7 @@
                     if (Math.random() < 0.01) createFallingFire(t.body.position.x + (Math.random()-0.5)*20, t.body.position.y - 10);
                 }
                 for (let j = rains.length - 1; j >= 0; j--) {
-                    if (Vector.magnitude(Vector.sub(t.body.position, rains[j].body.position)) < 40 * t.scale && t.isBurning) {
+                    if (distSq(t.body.position, rains[j].body.position) < (40 * t.scale)**2 && t.isBurning) {
                         t.isBurning = false; t.burnTimer = 300; Composite.remove(world, rains[j].body); rains.splice(j, 1);
                     }
                 }
@@ -821,7 +881,7 @@
                 let pl = plants[i]; pl.time++; pl.scale += (pl.targetScale - pl.scale) * 0.1;
                 if (isNight && pl.type === 'flower') pl.isBud = true; else pl.isBud = false;
                 if (pl.targetScale === 1.0 && pl.scale < 0.95) pl.targetScale = 1.0; 
-                fires.forEach(fi => { if (Vector.magnitude(Vector.sub(pl.body.position, fi.body.position)) < 35) pl.isBurning = true; });
+                fires.forEach(fi => { if (distSq(pl.body.position, fi.body.position) < 1225) pl.isBurning = true; }); // 35^2
 
                 if (pl.isBurning && !pl.isBud) {
                     pl.burnTimer--;
@@ -830,7 +890,7 @@
                 }
 
                 for (let j = rains.length - 1; j >= 0; j--) {
-                    if (Vector.magnitude(Vector.sub(pl.body.position, rains[j].body.position)) < 30) {
+                    if (distSq(pl.body.position, rains[j].body.position) < 900) {
                         if (pl.isBurning) { pl.isBurning = false; pl.burnTimer = 300; } 
                         else if (pl.targetScale < 1.8 && !pl.isBud) pl.targetScale += 0.15; 
                         Composite.remove(world, rains[j].body); rains.splice(j, 1);
@@ -838,7 +898,7 @@
                 }
                 if(pl.type === 'flower' && !pl.isBud) {
                     dwarfs.forEach(d => {
-                        if (!d.inHouse && !pl.isBurning && Vector.magnitude(Vector.sub(pl.body.position, d.body.position)) < 35 && Math.random() < 0.1) {
+                        if (!d.inHouse && !pl.isBurning && distSq(pl.body.position, d.body.position) < 1225 && Math.random() < 0.1) {
                             particles.push({ x: pl.body.position.x + (Math.random()-0.5)*20, y: pl.body.position.y - 10 + (Math.random()-0.5)*20, vx: (Math.random()-0.5)*2, vy: -1 - Math.random()*2, life: 50 + Math.random()*50, color: '#ffffff', baseRadius: 2.5, spikes: [] });
                         }
                     });
@@ -852,7 +912,7 @@
                     if(isGrounded) { Body.applyForce(c.body, c.body.position, {x: c.dir * 0.0005, y: 0}); if (c.time % 30 === 0) Body.setVelocity(c.body, {x: c.body.velocity.x, y: -2}); }
                     if(Math.random() < 0.01) c.dir *= -1;
                     for (let j = plants.length - 1; j >= 0; j--) {
-                        if (plants[j].type === 'flower' && Vector.magnitude(Vector.sub(c.body.position, plants[j].body.position)) < 30) {
+                        if (plants[j].type === 'flower' && distSq(c.body.position, plants[j].body.position) < 900) {
                             Composite.remove(world, plants[j].body); plants.splice(j, 1); c.eaten++;
                             if (c.eaten >= 1) { c.state = 'pupa'; c.timer = 300; Body.setStatic(c.body, true); } break;
                         }
@@ -875,8 +935,13 @@
                 b.time++; const body = b.body;
                 if (b.state === 'hunting') {
                     Body.applyForce(body, body.position, { x: 0, y: -0.0002 * body.mass });
-                    let closestDwarf = null; let minDist = 300;
-                    dwarfs.forEach(d => { if (!d.inHouse && !d.isGrabbed && !d.isCharred && Vector.magnitude(Vector.sub(body.position, d.body.position)) < minDist) { minDist = Vector.magnitude(Vector.sub(body.position, d.body.position)); closestDwarf = d; } });
+                    let closestDwarf = null; let minDistSq = 90000;
+                    dwarfs.forEach(d => { 
+                        if (!d.inHouse && !d.isGrabbed && !d.isCharred) {
+                            let dSq = distSq(body.position, d.body.position);
+                            if (dSq < minDistSq) { minDistSq = dSq; closestDwarf = d; }
+                        }
+                    });
                     if (closestDwarf) { b.targetDwarf = closestDwarf; b.state = 'seeking'; } else { b.state = 'flying'; }
                 }
                 if (b.state === 'seeking' && b.targetDwarf) {
@@ -912,7 +977,7 @@
                 const f = fires[i]; f.time++;
                 if (Query.collides(f.body, groundBodies).length > 0 || Query.collides(f.body, lines.map(l => l.body)).length > 0) Body.setStatic(f.body, true);
                 for (let j = rains.length - 1; j >= 0; j--) {
-                    if (Vector.magnitude(Vector.sub(f.body.position, rains[j].body.position)) < 25) { 
+                    if (distSq(f.body.position, rains[j].body.position) < 625) { 
                         Composite.remove(world, rains[j].body); rains.splice(j, 1);
                         Composite.remove(world, f.body); fires.splice(i, 1); break; 
                     }
@@ -934,8 +999,7 @@
             for (let i = ripples.length - 1; i >= 0; i--) { ripples[i].r += 2; ripples[i].life--; if (ripples[i].life <= 0) ripples.splice(i, 1); }
             
             for (let i = snowmen.length - 1; i >= 0; i--) {
-                let sm = snowmen[i];
-                sm.time++;
+                let sm = snowmen[i]; sm.time++;
                 if (sm.body.position.y > height + 50) {
                     Composite.remove(world, sm.body);
                     if(sm.owner) sm.owner.ownsSnowman = null;
@@ -943,13 +1007,18 @@
                 }
             }
             
-            world.bodies.forEach(b => { if(b.label === 'note' && b.position.y > height + 50) Composite.remove(world, b); });
+            // ★軽量化: notes管理配列での削除
+            for (let i = notes.length - 1; i >= 0; i--) {
+                let b = notes[i];
+                if (b.bounceCount >= 15 || b.position.y > height + 50) {
+                    Composite.remove(world, b); notes.splice(i, 1);
+                }
+            }
         });
 
         setInterval(() => { if (bubbles.length < 18) createBubble(); }, 1000);
         setInterval(() => { if (clouds.length < 4) createCloud(); }, 4000); 
 
-        // --- タッチ＆クリック操作 ---
         let isDrawing = false; 
         let currentPath = []; 
         let currentStrokeId = 0;
@@ -961,9 +1030,15 @@
             touchStartPos = { x, y }; touchCurrentPos = { x, y };
             let intercepted = false;
 
+            sounds.sparkle();
+            ripples.push({x: x, y: y, r: 0, life: 30, color: '#ffb3ff', width: 3, isCircle: true});
+            for(let p=0; p<4; p++) {
+                particles.push({ x: x, y: y, vx: (Math.random()-0.5)*4, vy: (Math.random()-0.5)*4, life: 30, color: '#ffffff', baseRadius: 2.5, spikes: [], isEffect: true });
+            }
+
             for (let i = 0; i < snowmen.length; i++) {
                 let sm = snowmen[i];
-                if (Math.hypot(sm.body.position.x - x, sm.body.position.y - y) < 40) {
+                if (distSq({x,y}, sm.body.position) < 1600) {
                     createSplatterParticles(sm.body.position.x, sm.body.position.y, '#99ccff');
                     createSnowShards(sm.body.position.x, sm.body.position.y);
                     sounds.pop(); Composite.remove(world, sm.body); 
@@ -975,7 +1050,7 @@
 
             for (let i = 0; i < trees.length; i++) {
                 let t = trees[i];
-                if (Math.hypot(t.body.position.x - x, t.body.position.y - y) < 40 * t.scale) {
+                if (distSq({x,y}, t.body.position) < (40 * t.scale)**2) {
                     if (!t.isHouse) {
                         t.isHouse = true; t.scale = 2; sounds.magic();
                         Matter.Body.scale(t.body, 2, 2);
@@ -1008,7 +1083,7 @@
 
             for (let i = 0; i < fallenStars.length; i++) {
                 let s = fallenStars[i];
-                if (Math.hypot(s.body.position.x - x, s.body.position.y - y) < 40) {
+                if (distSq({x,y}, s.body.position) < 1600) {
                     createSplatterParticles(s.body.position.x, s.body.position.y, pastelYellow); sounds.magic(); 
                     Composite.remove(world, s.body); fallenStars.splice(i, 1); intercepted = true; break;
                 }
@@ -1017,12 +1092,12 @@
             
             for (let i = bubbles.length - 1; i >= 0; i--) {
                 const b = bubbles[i];
-                if (Math.hypot(b.x - x, b.y - y) < b.radius + 15) { grabbedBubble = b; intercepted = true; break; }
+                if (distSq({x,y}, {x:b.x, y:b.y}) < (b.radius + 15)**2) { grabbedBubble = b; intercepted = true; break; }
             }
             if (intercepted) return;
 
             for (let c of clouds) { 
-                if (Math.hypot(c.x - x, c.y - y) < c.radius * 1.5) { 
+                if (distSq({x,y}, {x:c.x, y:c.y}) < (c.radius * 1.5)**2) { 
                     if(c.type === 'white') { c.isRaining = true; c.rainTimer = 600; sounds.rain(); } 
                     else if(c.type === 'thunder' && !c.isStriking) { c.isStriking = true; c.strikeTimer = 15; triggerLightning(c.x); }
                     intercepted = true; break; 
@@ -1032,7 +1107,7 @@
 
             for (let i = 0; i < particles.length; i++) {
                 const p = particles[i];
-                if (x > p.x - p.baseRadius - 30 && x < p.x + p.baseRadius + 30 && y > p.y - p.baseRadius - 30 && y < p.y + p.baseRadius + 30 && p.life > 10) { 
+                if (!p.isEffect && x > p.x - p.baseRadius - 30 && x < p.x + p.baseRadius + 30 && y > p.y - p.baseRadius - 30 && y < p.y + p.baseRadius + 30 && p.life > 10) { 
                     currentColor = p.color; sounds.pop(); intercepted = true; particles.splice(i, 1); break; 
                 }
             }
@@ -1046,10 +1121,10 @@
 
             dwarfs.forEach(d => {
                 if (d.isCharred && !d.inHouse) {
-                    if (Math.hypot(d.body.position.x - x, d.body.position.y - y) < 35) {
+                    if (distSq({x,y}, d.body.position) < 1225) {
                         d.scrubCount = (d.scrubCount || 0) + 1;
                         if (Math.random() < 0.3) {
-                            particles.push({ x: x + (Math.random()-0.5)*15, y: y + (Math.random()-0.5)*15, vx: (Math.random()-0.5)*2, vy: (Math.random()-0.5)*2, life: 20, color: '#ffffff', baseRadius: 1.5, spikes: [] });
+                            particles.push({ x: x + (Math.random()-0.5)*15, y: y + (Math.random()-0.5)*15, vx: (Math.random()-0.5)*2, vy: (Math.random()-0.5)*2, life: 20, color: '#ffffff', baseRadius: 1.5, spikes: [], isEffect: true });
                         }
                         if (d.scrubCount > 15) {
                             d.isCharred = false; d.charredTimer = 0; d.scrubCount = 0; sounds.magic();
@@ -1091,7 +1166,7 @@
                         isDrawing = false; currentPath = []; touchStartPos = null; touchCurrentPos = null; return;
                     }
                 }
-                if (Math.hypot(start.x - end.x, start.y - end.y) < 60) { createDrawnObject(currentPath, currentColor, currentStrokeId); }
+                if (Math.hypot(start.x - end.x, start.y - end.y) < 200) { createDrawnObject(currentPath, currentColor, currentStrokeId); }
             }
             isDrawing = false; currentPath = []; touchStartPos = null; touchCurrentPos = null;
         }
@@ -1117,10 +1192,17 @@
                 bgGradient.addColorStop(0, '#1a1a3a'); bgGradient.addColorStop(0.5, '#2b2045'); bgGradient.addColorStop(1, '#4a3b5c'); 
                 ctx.fillStyle = bgGradient; ctx.fillRect(0, 0, width, height);
                 ctx.fillStyle = '#ffffff';
-                stars.forEach(s => { ctx.globalAlpha = 0.3 + Math.sin(t*2 + s.x)*0.7; ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI*2); ctx.fill(); });
-                ctx.globalAlpha = 1.0;
+                
+                // ★軽量化: 星の描画を1回のパスにまとめる (150回の fill を 1回に削減)
+                ctx.beginPath();
+                stars.forEach(s => { 
+                    if (Math.sin(t*2 + s.x) > 0.8) return; // 擬似的なまたたき
+                    ctx.moveTo(s.x, s.y);
+                    ctx.arc(s.x, s.y, s.r, 0, Math.PI*2); 
+                });
+                ctx.fill();
             } else {
-                bgGradient.addColorStop(0, '#ffd9e6'); bgGradient.addColorStop(0.5, '#e6e6ff'); bgGradient.addColorStop(1, '#d9f2ff'); 
+                bgGradient.addColorStop(0, '#ffccdd'); bgGradient.addColorStop(0.5, '#e0e0ff'); bgGradient.addColorStop(1, '#ccebff'); 
                 ctx.fillStyle = bgGradient; ctx.fillRect(0, 0, width, height);
                 ctx.globalCompositeOperation = 'source-over';
                 function drawMarbleBlob(x, y, rad, color) {
@@ -1175,14 +1257,17 @@
                 ctx.save(); ctx.translate(t.body.position.x, t.body.position.y);
                 ctx.scale(t.scale, t.scale); 
                 
-                ctx.fillStyle = pastelBrown; ctx.beginPath(); ctx.moveTo(-3, -10); ctx.lineTo(-8, 30); ctx.lineTo(8, 30); ctx.lineTo(3, -10); ctx.closePath(); ctx.fill(); 
+                const treeStroke = 'rgba(80, 100, 80, 0.2)';
+                ctx.lineWidth = 2.5; ctx.strokeStyle = treeStroke; ctx.lineJoin = 'round';
+
+                ctx.fillStyle = pastelBrown; ctx.beginPath(); ctx.moveTo(-3, -10); ctx.lineTo(-8, 30); ctx.lineTo(8, 30); ctx.lineTo(3, -10); ctx.closePath(); ctx.fill(); ctx.stroke();
                 
                 if (t.isHouse) {
                     ctx.fillStyle = '#8d6e63'; ctx.fillRect(-6, 12, 12, 18);
                     ctx.fillStyle = '#ffecb3'; ctx.beginPath(); ctx.arc(3, 22, 2, 0, Math.PI*2); ctx.fill();
                 }
 
-                ctx.fillStyle = t.isBurning ? '#ff8a65' : pastelGreen; ctx.beginPath(); ctx.ellipse(0, -15, 23, 33, 0, 0, Math.PI * 2); ctx.fill(); 
+                ctx.fillStyle = t.isBurning ? '#ff8a65' : pastelGreen; ctx.beginPath(); ctx.ellipse(0, -15, 23, 33, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
                 
                 if (t.isHouse && !t.isBurning) {
                     ctx.fillStyle = '#fff9c4'; ctx.beginPath(); ctx.arc(0, -10, 8, 0, Math.PI*2); ctx.fill();
@@ -1215,19 +1300,33 @@
                 ctx.beginPath(); ctx.arc(0, 0, c.radius, 0, Math.PI*2); ctx.arc(-c.radius*0.6, +c.radius*0.2, c.radius*0.7, 0, Math.PI*2); ctx.arc(+c.radius*0.6, +c.radius*0.2, c.radius*0.7, 0, Math.PI*2); ctx.fill(); 
 
                 if (c.isStriking) {
-                    ctx.strokeStyle = '#fffb00'; ctx.lineWidth = 4; ctx.shadowColor = '#ffaa00'; ctx.shadowBlur = 20; ctx.lineJoin = 'miter';
-                    ctx.beginPath(); let lx = 0; let ly = 0; ctx.moveTo(lx, ly);
+                    // ★軽量化: シャドウを消して半透明の太い線で発光を再現
+                    ctx.strokeStyle = 'rgba(255, 255, 0, 0.3)'; ctx.lineWidth = 12; ctx.lineJoin = 'miter';
+                    
                     let segments = 6 + Math.floor(Math.random()*4); let branchIndex = Math.floor(segments / 2); let branchX, branchY;
-                    for(let k=0; k<segments; k++) { lx += (Math.random()-0.5)*60; ly += (height / segments); ctx.lineTo(lx, ly); if(k === branchIndex) { branchX = lx; branchY = ly; } }
-                    ctx.stroke();
-                    if(branchX) { ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(branchX, branchY); ctx.lineTo(branchX + (Math.random()>0.5?1:-1)*50, branchY + 60); ctx.stroke(); }
+                    let p = []; let lx = 0; let ly = 0; p.push({x:lx, y:ly});
+                    for(let k=0; k<segments; k++) { lx += (Math.random()-0.5)*60; ly += (height / segments); p.push({x:lx, y:ly}); if(k === branchIndex) { branchX = lx; branchY = ly; } }
+                    
+                    ctx.beginPath(); ctx.moveTo(p[0].x, p[0].y); p.forEach(pt => ctx.lineTo(pt.x, pt.y)); ctx.stroke();
+                    ctx.strokeStyle = '#fffb00'; ctx.lineWidth = 4;
+                    ctx.beginPath(); ctx.moveTo(p[0].x, p[0].y); p.forEach(pt => ctx.lineTo(pt.x, pt.y)); ctx.stroke();
+                    
+                    if(branchX) { 
+                        let eX = branchX + (Math.random()>0.5?1:-1)*50; let eY = branchY + 60;
+                        ctx.strokeStyle = 'rgba(255, 255, 0, 0.3)'; ctx.lineWidth = 8; ctx.beginPath(); ctx.moveTo(branchX, branchY); ctx.lineTo(eX, eY); ctx.stroke();
+                        ctx.strokeStyle = '#fffb00'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(branchX, branchY); ctx.lineTo(eX, eY); ctx.stroke();
+                    }
                 }
                 ctx.restore();
             });
 
             fallenStars.forEach(s => {
                 s.time++; ctx.save(); ctx.translate(s.body.position.x, s.body.position.y); ctx.rotate(s.body.angle);
-                let glow = Math.sin(s.time * 0.1) * 0.5 + 0.5; ctx.shadowColor = '#ffffaa'; ctx.shadowBlur = 10 + glow * 25;
+                // ★軽量化: シャドウの代わりに半透明の円で発光を再現
+                let glow = Math.sin(s.time * 0.1) * 0.5 + 0.5; 
+                ctx.fillStyle = 'rgba(255, 255, 170, 0.3)';
+                ctx.beginPath(); ctx.arc(0, 0, 15 + glow * 15, 0, Math.PI*2); ctx.fill();
+
                 ctx.fillStyle = '#fff9c4'; ctx.beginPath();
                 for(let i=0; i<5; i++){
                     ctx.lineTo(Math.cos(i*Math.PI*0.4 - Math.PI/2)*20, Math.sin(i*Math.PI*0.4 - Math.PI/2)*20);
@@ -1237,14 +1336,21 @@
             });
 
             lines.forEach(l => {
-                ctx.save(); ctx.globalAlpha = Math.min(1, l.life / 100); ctx.translate(l.body.position.x, l.body.position.y); ctx.rotate(l.body.angle);
-                if (isNight) { ctx.shadowColor = l.color; ctx.shadowBlur = 15; }
+                ctx.save(); ctx.translate(l.body.position.x, l.body.position.y); ctx.rotate(l.body.angle);
+                if (isNight) { 
+                    // ★軽量化: 線の発光をシャドウではなく太い半透明の線で再現
+                    ctx.strokeStyle = l.color; ctx.lineCap = 'round';
+                    ctx.globalAlpha = Math.min(0.3, l.life / 100);
+                    ctx.lineWidth = l.height + 8;
+                    ctx.beginPath(); ctx.moveTo(-l.width/2, 0); ctx.lineTo(l.width/2, 0); ctx.stroke();
+                }
+                ctx.globalAlpha = Math.min(1, l.life / 100);
                 ctx.beginPath(); ctx.moveTo(-l.width/2, 0); ctx.lineTo(l.width/2, 0); ctx.strokeStyle = l.color; ctx.lineWidth = l.height; ctx.lineCap = 'round'; ctx.stroke(); ctx.restore();
             });
 
             drawnObjects.forEach(obj => {
                 ctx.save(); ctx.fillStyle = getPattern(obj.color); 
-                if (isNight) { ctx.shadowColor = obj.color; ctx.shadowBlur = 15; }
+                if (isNight) ctx.globalAlpha = 0.8; 
                 ctx.beginPath();
                 obj.body.parts.forEach((part, i) => {
                     if (i === 0 && obj.body.parts.length > 1) return; 
@@ -1300,8 +1406,11 @@
             });
 
             ripples.forEach(r => {
-                ctx.save(); ctx.globalAlpha = r.life / 30; ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
-                ctx.beginPath(); ctx.ellipse(r.x, r.y, r.r, r.r*0.5, 0, 0, Math.PI*2); ctx.stroke(); ctx.restore();
+                ctx.save(); ctx.globalAlpha = r.life / 30; ctx.strokeStyle = r.color || '#ffffff'; ctx.lineWidth = r.width || 2;
+                ctx.beginPath(); 
+                if(r.isCircle) { ctx.arc(r.x, r.y, r.r, 0, Math.PI*2); } 
+                else { ctx.ellipse(r.x, r.y, r.r, r.r*0.5, 0, 0, Math.PI*2); }
+                ctx.stroke(); ctx.restore();
             });
 
             world.bodies.forEach(b => {
@@ -1356,27 +1465,34 @@
                 const beardColor = d.isCharred ? '#222' : '#ffffff'; const shoeColor = d.isCharred ? '#111' : softCharcoal;
                 const eyeColor = d.isCharred ? '#ffffff' : softCharcoal;
 
+                const outlineColor = isNight ? 'rgba(255,255,255,0.1)' : 'rgba(100,110,130,0.25)';
+                ctx.lineWidth = 1.5 * sf; ctx.strokeStyle = outlineColor; ctx.lineJoin = 'round';
+
                 ctx.fillStyle = shoeColor;
                 ctx.beginPath(); ctx.ellipse(-4*sf, 12*sf + legWobble, 3*sf, 2.5*sf, 0, 0, Math.PI*2); ctx.fill(); 
                 ctx.beginPath(); ctx.ellipse(4*sf, 12*sf - legWobble, 3*sf, 2.5*sf, 0, 0, Math.PI*2); ctx.fill(); 
 
-                ctx.fillStyle = clothesColor; ctx.beginPath(); ctx.arc(0, 4*sf, 9*sf, 0, Math.PI*2); ctx.fill(); 
+                ctx.fillStyle = clothesColor; ctx.beginPath(); ctx.arc(0, 4*sf, 9*sf, 0, Math.PI*2); ctx.fill(); ctx.stroke();
 
                 ctx.beginPath();
                 if (d.isGrabbed) { ctx.arc(9*sf, -4*sf, 3*sf, 0, Math.PI*2); ctx.fill(); ctx.arc(-9*sf, -4*sf, 3*sf, 0, Math.PI*2); ctx.fill(); 
                 } else { ctx.arc(9*sf, 6*sf + armWobble, 3*sf, 0, Math.PI*2); ctx.fill(); ctx.arc(-9*sf, 6*sf - armWobble, 3*sf, 0, Math.PI*2); ctx.fill(); }
 
-                if (isNight && !d.isCharred) { ctx.fillStyle = 'rgba(255, 255, 100, 0.8)'; ctx.shadowColor = '#ffffaa'; ctx.shadowBlur = 10; ctx.beginPath(); ctx.arc(12*sf, 8*sf, 3*sf, 0, Math.PI*2); ctx.fill(); ctx.shadowBlur = 0; }
+                if (isNight && !d.isCharred) { 
+                    // ★軽量化: シャドウの代わりに半透明の円で発光を再現
+                    ctx.fillStyle = 'rgba(255, 255, 100, 0.4)'; ctx.beginPath(); ctx.arc(12*sf, 8*sf, 8*sf, 0, Math.PI*2); ctx.fill(); 
+                    ctx.fillStyle = 'rgba(255, 255, 100, 0.8)'; ctx.beginPath(); ctx.arc(12*sf, 8*sf, 3*sf, 0, Math.PI*2); ctx.fill(); 
+                }
 
-                ctx.fillStyle = beardColor; ctx.beginPath(); ctx.moveTo(-9*sf, -1*sf); ctx.quadraticCurveTo(-11*sf, 12*sf, 0, 16*sf); ctx.quadraticCurveTo(11*sf, 12*sf, 9*sf, -1*sf); ctx.quadraticCurveTo(0, -4*sf, -9*sf, -1*sf); ctx.fill(); 
-                ctx.fillStyle = skinColor; ctx.beginPath(); ctx.arc(0, -1*sf, 3.5*sf, 0, Math.PI*2); ctx.fill(); 
+                ctx.fillStyle = beardColor; ctx.beginPath(); ctx.moveTo(-9*sf, -1*sf); ctx.quadraticCurveTo(-11*sf, 12*sf, 0, 16*sf); ctx.quadraticCurveTo(11*sf, 12*sf, 9*sf, -1*sf); ctx.quadraticCurveTo(0, -4*sf, -9*sf, -1*sf); ctx.fill(); ctx.stroke();
+                ctx.fillStyle = skinColor; ctx.beginPath(); ctx.arc(0, -1*sf, 3.5*sf, 0, Math.PI*2); ctx.fill(); ctx.stroke();
                 ctx.fillStyle = eyeColor; ctx.beginPath(); ctx.arc(-1.5*sf, -2.5*sf, 0.8*sf, 0, Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(1.5*sf, -2.5*sf, 0.8*sf, 0, Math.PI*2); ctx.fill();
 
                 ctx.fillStyle = clothesColor; ctx.beginPath();
                 if (d.type === 0) { ctx.moveTo(-10*sf, 0); ctx.quadraticCurveTo(0, -3*sf, 10*sf, 0); ctx.lineTo(0, -20*sf); ctx.closePath();
                 } else if (d.type === 1) { ctx.moveTo(-10*sf, 0); ctx.quadraticCurveTo(0, -3*sf, 10*sf, 0); ctx.quadraticCurveTo(4*sf, -16*sf, -8*sf, -18*sf); ctx.quadraticCurveTo(0, -10*sf, -10*sf, 0);
                 } else if (d.type === 2) { ctx.moveTo(-10*sf, 0); ctx.quadraticCurveTo(0, -3*sf, 10*sf, 0); ctx.quadraticCurveTo(12*sf, -14*sf, 0, -16*sf); ctx.quadraticCurveTo(-12*sf, -14*sf, -10*sf, 0); }
-                ctx.fill(); 
+                ctx.fill(); ctx.stroke();
                 ctx.restore();
             });
 
@@ -1447,18 +1563,42 @@
                 ctx.restore();
             });
 
+            balloons.forEach(b => {
+                ctx.save(); ctx.translate(b.body.position.x, b.body.position.y); ctx.scale(1.8, 1.8);
+                
+                ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, 5); 
+                if (b.passenger) {
+                    ctx.lineTo(0, 20);
+                } else {
+                    ctx.lineTo(0, 15);
+                }
+                ctx.stroke();
+
+                ctx.fillStyle = b.color; ctx.beginPath(); ctx.ellipse(0, -3, 6, 7, 0, 0, Math.PI*2); ctx.fill();
+                ctx.beginPath(); ctx.moveTo(-1, 4); ctx.lineTo(1, 4); ctx.lineTo(0, 5); ctx.fill();
+                ctx.fillStyle = '#ffffff'; ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.ellipse(-2, -5, 1.5, 3, Math.PI/4, 0, Math.PI*2); ctx.fill(); ctx.globalAlpha = 1.0;
+                
+                ctx.restore();
+            });
+
             bubbles.forEach(b => {
                 ctx.save(); ctx.translate(b.x, b.y);
+                
                 const bubbleGrad = ctx.createRadialGradient(0, 0, b.radius*0.3, 0, 0, b.radius);
-                bubbleGrad.addColorStop(0, 'rgba(255, 255, 255, 0.1)'); bubbleGrad.addColorStop(0.4, 'rgba(255, 150, 200, 0.4)'); 
-                bubbleGrad.addColorStop(0.6, 'rgba(150, 200, 255, 0.4)'); bubbleGrad.addColorStop(0.8, 'rgba(150, 255, 150, 0.4)'); bubbleGrad.addColorStop(1.0, 'rgba(255, 255, 150, 0.4)'); 
+                bubbleGrad.addColorStop(0, 'rgba(255, 255, 255, 0.4)'); 
+                bubbleGrad.addColorStop(0.5, 'rgba(255, 255, 255, 0.1)'); 
+                bubbleGrad.addColorStop(0.9, 'rgba(255, 255, 255, 0.6)'); 
+                bubbleGrad.addColorStop(1.0, 'rgba(255, 255, 255, 0.9)'); 
                 
                 ctx.beginPath(); ctx.arc(0, 0, b.radius, 0, Math.PI*2); ctx.fillStyle = bubbleGrad; ctx.fill(); 
-                ctx.strokeStyle = bubbleGrad; ctx.lineWidth = 3; ctx.stroke();
-                ctx.beginPath(); ctx.arc(-b.radius*0.3, -b.radius*0.3, b.radius*0.3, Math.PI, Math.PI*1.5); ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)'; ctx.lineWidth = 1.5; ctx.stroke();
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)'; ctx.lineWidth = 3.5; ctx.stroke();
+                ctx.beginPath(); ctx.arc(-b.radius*0.3, -b.radius*0.3, b.radius*0.3, Math.PI, Math.PI*1.5); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2.5; ctx.stroke();
                 ctx.restore();
 
                 ctx.save(); ctx.translate(b.x, b.y); ctx.scale(1.8, 1.8);
+                // ★軽量化: シャドウを無くし、代わりに白い背景円を薄く敷いて見やすくする
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'; ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI*2); ctx.fill();
+                
                 if (b.type === 'paint') { 
                     ctx.rotate(-Math.PI / 6); 
                     ctx.fillStyle = '#fdfbd4'; ctx.fillRect(-5, -10, 10, 16);
@@ -1527,15 +1667,16 @@
                 }
             });
             
+            // ★軽量化: トゲトゲパーティクルの描画時に三角関数計算を排除
             particles.forEach(p => {
                 ctx.save(); ctx.globalAlpha = Math.max(0, p.life / 200); ctx.translate(p.x, p.y); ctx.fillStyle = p.color;
                 ctx.beginPath(); ctx.arc(0, 0, p.baseRadius, 0, Math.PI * 2); ctx.fill();
                 p.spikes.forEach(s => {
                     if (s.len > 0) {
                         ctx.beginPath(); ctx.moveTo(0, 0); const w = p.baseRadius * 0.6;
-                        ctx.lineTo(Math.cos(s.angle - 1.5) * w, Math.sin(s.angle - 1.5) * w);
-                        ctx.lineTo(Math.cos(s.angle) * (p.baseRadius + s.len), Math.sin(s.angle) * (p.baseRadius + s.len));
-                        ctx.lineTo(Math.cos(s.angle + 1.5) * w, Math.sin(s.angle + 1.5) * w); ctx.fill();
+                        ctx.lineTo(s.c1 * w, s.s1 * w);
+                        ctx.lineTo(s.c * (p.baseRadius + s.len), s.s * (p.baseRadius + s.len));
+                        ctx.lineTo(s.c2 * w, s.s2 * w); ctx.fill();
                     }
                 });
                 ctx.restore();
